@@ -110,6 +110,9 @@ export const DEFAULT_PERMISSIONS: RolePermissions = {
   manage_roles: false,
   project: { create: true, delete_any: false },
   member: { invite: false, remove: false, change_role: false },
+  locale: { create: false, edit: false, delete: false },
+  key: { create: false, edit: false, delete: false },
+  translation: { edit: false },
 }
 
 // 权限显示名称映射

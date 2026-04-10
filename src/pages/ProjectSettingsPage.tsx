@@ -19,7 +19,7 @@ import { PROJECT_ROLE_LABELS, PROJECT_ROLE_COLORS, type ProjectRole } from '@/ty
 
 const { Title, Text } = Typography
 
-const SortableRow = ({ activeId, ...props }: React.ComponentProps<typeof Table.Row> & { activeId?: string }) => {
+const SortableRow = ({ activeId, ...props }: React.HTMLAttributes<HTMLTableRowElement> & { activeId?: string; 'data-row-key'?: string }) => {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: props['data-row-key'] })
   const style: React.CSSProperties = {
     ...props.style,
@@ -430,7 +430,7 @@ export default function ProjectSettingsPage() {
                 rowKey="id"
                 pagination={false}
                 size="middle"
-                components={{ body: { row: (props: React.ComponentProps<typeof Table.Row>) => <SortableRow activeId={activeLocaleId || undefined} {...props} /> } }}
+                components={{ body: { row: (props: React.HTMLAttributes<HTMLTableRowElement> & { 'data-row-key'?: string }) => <SortableRow activeId={activeLocaleId || undefined} {...props} /> } }}
               />
             </SortableContext>
             <DragOverlay>

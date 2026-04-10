@@ -22,10 +22,13 @@ export default function ResetPasswordPage() {
   const [accessToken, setAccessToken] = useState<string | null>(null)
   const [done, setDone] = useState(false)
 
+  const [isRecovery, setIsRecovery] = useState(false)
+
   useEffect(() => {
     const params = getHashParams()
     if (params.type === 'recovery' && params.access_token) {
       setAccessToken(params.access_token)
+      setIsRecovery(true)
     }
     setChecking(false)
   }, [])
