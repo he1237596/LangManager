@@ -20,7 +20,7 @@ import { PROJECT_ROLE_LABELS, PROJECT_ROLE_COLORS, type ProjectRole } from '@/ty
 const { Title, Text } = Typography
 
 const SortableRow = ({ activeId, ...props }: React.HTMLAttributes<HTMLTableRowElement> & { activeId?: string; 'data-row-key'?: string }) => {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: props['data-row-key'] })
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: props['data-row-key']! })
   const style: React.CSSProperties = {
     ...props.style,
     transform: CSS.Transform.toString(transform && { ...transform, scaleY: 1 }),
