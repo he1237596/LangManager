@@ -664,7 +664,7 @@ export default function ProjectDetailPage() {
           pageSizeOptions: ['20', '50', '100'],
         }}
         onChange={handleTableChange}
-        size="middle"
+        size="small"
       />
 
       {/* Add Key Modal */}
