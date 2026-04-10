@@ -40,7 +40,7 @@ export default function ProjectDetailPage() {
 
   // Server-side pagination & search
   const [currentPage, setCurrentPage] = useState(1)
-  const [pageSize, setPageSize] = useState(50)
+  const [pageSize, setPageSize] = useState(20)
   const searchKeyRef = useRef('')
   const searchTranslationRef = useRef('')
   const [searchKey, setSearchKey] = useState('')
@@ -379,7 +379,7 @@ export default function ProjectDetailPage() {
     const transMap: Record<string, string> = {}
     for (const t of translations || []) {
       const k = keys?.find(k => k.id === t.key_id)
-      if (k) transMap[k.key || `__null_${k.id}`] = t.value
+      if (k && k.key) transMap[k.key] = t.value
     }
     const blob = new Blob([JSON.stringify(transMap, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
@@ -412,7 +412,7 @@ export default function ProjectDetailPage() {
         const obj: Record<string, string> = {}
         for (const t of (translations || []).filter(t => t.locale_id === locale.id)) {
           const k = keys?.find(k => k.id === t.key_id)
-          if (k) obj[k.key || `__null_${k.id}`] = t.value
+          if (k && k.key) obj[k.key] = t.value
         }
         zip.file(`${locale.code}.json`, JSON.stringify(obj, null, 2))
       }
@@ -455,7 +455,7 @@ export default function ProjectDetailPage() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleTableChange = (pagination: TablePaginationConfig, _filters: any, sorter: SorterResult<TranslationRow> | SorterResult<TranslationRow>[]) => {
     const page = pagination.current || 1
-    const size = pagination.pageSize || 50
+    const size = pagination.pageSize || 20
     setCurrentPage(page)
     setPageSize(size)
     const s = Array.isArray(sorter) ? sorter[0] : sorter
@@ -478,6 +478,13 @@ export default function ProjectDetailPage() {
   }
 
   const columns = [
+    {
+      title: '#',
+      key: 'index',
+      width: 60,
+      fixed: 'left' as const,
+      render: (_: unknown, __: TranslationRow, index: number) => (currentPage - 1) * pageSize + index + 1,
+    },
     {
       title: 'Key',
       dataIndex: 'key',
