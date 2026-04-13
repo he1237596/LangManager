@@ -184,6 +184,14 @@ export default function SystemSettingsPage() {
       message.warning('不能修改自己的角色')
       return
     }
+    // 非超级管理员不能将别人设为超级管理员
+    if (!isSuperAdmin) {
+      const targetRole = roles.find(r => r.id === newRoleId)
+      if (targetRole?.name === 'super_admin') {
+        message.warning('仅超级管理员可将用户设为超级管理员')
+        return
+      }
+    }
     const { error } = await supabase
       .from('profiles')
       .update({ role_id: newRoleId, updated_at: new Date().toISOString() })
@@ -295,6 +303,7 @@ export default function SystemSettingsPage() {
             disabled={!canManageUsers || isSelf}
             options={roles.map(r => ({
               value: r.id,
+              disabled: !isSuperAdmin && r.name === 'super_admin',
               label: <Tag color={r.name === 'super_admin' ? 'red' : r.name === 'sys_admin' ? 'orange' : r.name === 'operator' ? 'blue' : 'default'}>{r.display_name}</Tag>,
             }))}
           />
@@ -638,10 +647,14 @@ export default function SystemSettingsPage() {
             initialValue="user"
           >
             <Select
-              options={roles.map(r => ({
-                value: r.name,
-                label: <Tag color={r.name === 'super_admin' ? 'red' : r.name === 'sys_admin' ? 'orange' : r.name === 'operator' ? 'blue' : 'default'}>{r.display_name}</Tag>,
-              }))}
+              options={roles.map(r => {
+                // 非超级管理员不能创建超级管理员
+                if (!isSuperAdmin && r.name === 'super_admin') return null
+                return {
+                  value: r.name,
+                  label: <Tag color={r.name === 'super_admin' ? 'red' : r.name === 'sys_admin' ? 'orange' : r.name === 'operator' ? 'blue' : 'default'}>{r.display_name}</Tag>,
+                }
+              }).filter(Boolean)}
             />
           </Form.Item>
           <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>

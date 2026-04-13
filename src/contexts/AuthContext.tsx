@@ -22,20 +22,6 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
-function getStorageKey(): string {
-  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || ''
-  const urlMatch = supabaseUrl.match(/\/\/([^.]+)\./)
-  return urlMatch ? `sb-${urlMatch[1]}-auth-token` : 'sb-auth-token'
-}
-
-function getAnonKey(): string {
-  return import.meta.env.VITE_SUPABASE_ANON_KEY || ''
-}
-
-function getSupabaseUrl(): string {
-  return import.meta.env.VITE_SUPABASE_URL || ''
-}
-
 // 深层取值
 function getNestedValue(obj: unknown, path: string): boolean {
   const keys = path.split('.')
@@ -50,26 +36,6 @@ function getNestedValue(obj: unknown, path: string): boolean {
   return current === true
 }
 
-// 从 localStorage 读取 session（同步，不会挂起）
-function readStoredSession(): Session | null {
-  try {
-    const raw = localStorage.getItem(getStorageKey())
-    if (!raw) return null
-    return JSON.parse(raw)
-  } catch {
-    return null
-  }
-}
-
-function writeSession(session: Session | null) {
-  const key = getStorageKey()
-  if (session) {
-    localStorage.setItem(key, JSON.stringify(session))
-  } else {
-    localStorage.removeItem(key)
-  }
-}
-
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
@@ -79,10 +45,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const fetchProfile = useCallback(async (userId: string) => {
     try {
-      const stored = readStoredSession()
-      const token = stored?.access_token
-      if (!token) return null
-
       const { data } = await supabase
         .from('profiles')
         .select('*, system_role:roles(*)')
@@ -110,56 +72,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  // 初始化：同步读取 localStorage，避免 getSession() 挂起
+  // 初始化：从 SDK 获取 session
   useEffect(() => {
-    const stored = readStoredSession()
-    if (stored?.user) {
-      setSession(stored)
-      setUser(stored.user)
-      fetchProfile(stored.user.id)
-    }
-    // 无论是否有 session，都立即结束 loading
-    setLoading(false)
-
-    // 仍然监听 auth state change（仅在 Supabase 客户端正常工作时才触发）
-    try {
-      const { data: { subscription } } = supabase.auth.onAuthStateChange(
-        (event, newSession) => {
-          // 仅在其他地方触发了 auth 变化时更新（如 setSession）
-          if (event === 'SIGNED_OUT') {
-            setSession(null)
-            setUser(null)
-            setProfile(null)
-            setSystemRole(null)
-          }
-        }
-      )
-      return () => {
-        try { subscription.unsubscribe() } catch {}
+    supabase.auth.getSession().then(({ data: { session: currentSession } }) => {
+      setSession(currentSession)
+      setUser(currentSession?.user ?? null)
+      if (currentSession?.user) {
+        fetchProfile(currentSession.user.id)
       }
-    } catch {
-      return undefined
-    }
+      setLoading(false)
+    })
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (_event, newSession) => {
+        setSession(newSession)
+        setUser(newSession?.user ?? null)
+        if (newSession?.user) {
+          fetchProfile(newSession.user.id)
+        } else {
+          setProfile(null)
+          setSystemRole(null)
+        }
+      }
+    )
+
+    return () => subscription.unsubscribe()
   }, [fetchProfile])
 
   const signUp = async (email: string, password: string, displayName: string) => {
     try {
-      const res = await fetch(`${getSupabaseUrl()}/auth/v1/signup`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': getAnonKey(),
-        },
-        body: JSON.stringify({
-          email,
-          password,
-          data: { display_name: displayName },
-        }),
+      const { error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: { data: { display_name: displayName } },
       })
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}))
-        return { error: errData?.error_description || errData?.error || `HTTP ${res.status}` }
-      }
+      if (error) return { error: error.message }
       return { error: null }
     } catch (err) {
       console.error('[Auth] signUp exception:', err)
@@ -169,35 +116,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signIn = async (email: string, password: string) => {
     try {
-      const res = await fetch(`${getSupabaseUrl()}/auth/v1/token?grant_type=password`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': getAnonKey(),
-        },
-        body: JSON.stringify({ email, password }),
-      })
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}))
-        return { error: errData?.error_description || errData?.error || `HTTP ${res.status}` }
-      }
-
-      const data = await res.json()
-
-      const newSession: Session = {
-        access_token: data.access_token,
-        refresh_token: data.refresh_token,
-        token_type: data.token_type,
-        expires_in: data.expires_in,
-        expires_at: data.expires_at,
-        user: data.user,
-      }
-      writeSession(newSession)
-      setSession(newSession)
-      setUser(data.user)
-      await fetchProfile(data.user.id)
-
+      const { error } = await supabase.auth.signInWithPassword({ email, password })
+      if (error) return { error: error.message }
       return { error: null }
     } catch (err) {
       console.error('[Auth] signIn exception:', err)
@@ -206,27 +126,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   const signOut = async () => {
-    writeSession(null)
-    setSession(null)
-    setUser(null)
-    setProfile(null)
-    setSystemRole(null)
+    await supabase.auth.signOut()
   }
 
   const resetPassword = async (email: string) => {
     try {
-      const res = await fetch(`${getSupabaseUrl()}/auth/v1/recover`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': getAnonKey(),
-        },
-        body: JSON.stringify({ email }),
-      })
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}))
-        return { error: errData?.error_description || errData?.error || `HTTP ${res.status}` }
-      }
+      const { error } = await supabase.auth.resetPasswordForEmail(email)
+      if (error) return { error: error.message }
       return { error: null }
     } catch (err) {
       console.error('[Auth] resetPassword exception:', err)
@@ -252,19 +158,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const changePassword = async (newPassword: string) => {
     try {
-      const res = await fetch(`${getSupabaseUrl()}/auth/v1/user`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': getAnonKey(),
-          'Authorization': `Bearer ${session?.access_token}`,
-        },
-        body: JSON.stringify({ password: newPassword }),
-      })
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}))
-        return { error: errData?.error_description || errData?.error || `HTTP ${res.status}` }
-      }
+      const { error } = await supabase.auth.updateUser({ password: newPassword })
+      if (error) return { error: error.message }
       return { error: null }
     } catch (err) {
       console.error('[Auth] changePassword exception:', err)

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Card, Form, Input, Button, Typography, message, Result } from 'antd'
 import { LockOutlined, CheckCircleOutlined } from '@ant-design/icons'
+import { supabase } from '@/api/supabase'
 
 const { Title } = Typography
 
@@ -19,44 +20,32 @@ export default function ResetPasswordPage() {
   const navigate = useNavigate()
   const [loading, setLoading] = useState(false)
   const [checking, setChecking] = useState(true)
-  const [accessToken, setAccessToken] = useState<string | null>(null)
-  const [done, setDone] = useState(false)
-
   const [isRecovery, setIsRecovery] = useState(false)
+  const [done, setDone] = useState(false)
 
   useEffect(() => {
     const params = getHashParams()
     if (params.type === 'recovery' && params.access_token) {
-      setAccessToken(params.access_token)
       setIsRecovery(true)
+      // 用 SDK 验证 recovery token 并恢复 session
+      supabase.auth.verifyOtp({
+        token_hash: params.access_token,
+        type: 'recovery',
+      }).then(({ error }) => {
+        if (error) setIsRecovery(false)
+        setChecking(false)
+      })
+    } else {
+      setChecking(false)
     }
-    setChecking(false)
   }, [])
 
   const onFinish = async (values: { password: string }) => {
-    if (!accessToken) {
-      message.error('无效的重置链接，请重新申请密码重置')
-      return
-    }
-
     setLoading(true)
     try {
-      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
-      const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
-
-      const res = await fetch(`${supabaseUrl}/auth/v1/user`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': supabaseAnonKey,
-          'Authorization': `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({ password: values.password }),
-      })
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}))
-        message.error(errData?.error_description || errData?.error || '重置失败')
+      const { error } = await supabase.auth.updateUser({ password: values.password })
+      if (error) {
+        message.error(error.message)
       } else {
         setDone(true)
         window.history.replaceState(null, '', window.location.pathname)

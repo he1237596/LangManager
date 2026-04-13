@@ -399,6 +399,11 @@ CREATE POLICY "profiles_admin_role" ON public.profiles
   )
   WITH CHECK (
     public.has_system_permission(auth.uid(), 'manage_users') AND auth.uid() != id
+    -- 非超级管理员不能将别人设为超级管理员
+    AND (
+      public.is_super_admin(auth.uid())
+      OR role_id NOT IN (SELECT id FROM public.roles WHERE name = 'super_admin')
+    )
   );
 
 -- --- projects ---
@@ -525,6 +530,23 @@ $$;
 DROP TRIGGER IF EXISTS profiles_updated_at ON public.profiles;
 CREATE TRIGGER profiles_updated_at BEFORE UPDATE ON public.profiles
   FOR EACH ROW EXECUTE FUNCTION public.update_updated_at();
+
+-- 防止用户修改自己的 role_id（super_admin 除外）
+CREATE OR REPLACE FUNCTION public.prevent_self_role_change()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.role_id IS DISTINCT FROM OLD.role_id AND NEW.id = auth.uid() THEN
+    IF NOT public.is_super_admin(auth.uid()) THEN
+      NEW.role_id = OLD.role_id;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS profiles_role_guard ON public.profiles;
+CREATE TRIGGER profiles_role_guard BEFORE UPDATE ON public.profiles
+  FOR EACH ROW EXECUTE FUNCTION public.prevent_self_role_change();
 
 DROP TRIGGER IF EXISTS roles_updated_at ON public.roles;
 CREATE TRIGGER roles_updated_at BEFORE UPDATE ON public.roles
