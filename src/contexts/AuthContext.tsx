@@ -16,6 +16,7 @@ interface AuthContextType {
   signOut: () => Promise<void>
   resetPassword: (email: string) => Promise<{ error: string | null }>
   updateProfile: (updates: Partial<Profile>) => Promise<void>
+  changePassword: (newPassword: string) => Promise<{ error: string | null }>
   refreshProfile: () => Promise<void>
 }
 
@@ -249,6 +250,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
+  const changePassword = async (newPassword: string) => {
+    try {
+      const res = await fetch(`${getSupabaseUrl()}/auth/v1/user`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': getAnonKey(),
+          'Authorization': `Bearer ${session?.access_token}`,
+        },
+        body: JSON.stringify({ password: newPassword }),
+      })
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        return { error: errData?.error_description || errData?.error || `HTTP ${res.status}` }
+      }
+      return { error: null }
+    } catch (err) {
+      console.error('[Auth] changePassword exception:', err)
+      return { error: '修改密码请求异常' }
+    }
+  }
+
   const isSuperAdmin = systemRole?.name === 'super_admin'
 
   const hasPermission = (path: string): boolean => {
@@ -272,6 +295,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         signOut,
         resetPassword,
         updateProfile,
+        changePassword,
         refreshProfile,
       }}
     >
