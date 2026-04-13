@@ -184,11 +184,16 @@ export default function SystemSettingsPage() {
       message.warning('不能修改自己的角色')
       return
     }
-    // 非超级管理员不能将别人设为超级管理员
+    // 非超级管理员的限制
     if (!isSuperAdmin) {
       const targetRole = roles.find(r => r.id === newRoleId)
+      const targetUser = users.find(u => u.id === userId)
       if (targetRole?.name === 'super_admin') {
         message.warning('仅超级管理员可将用户设为超级管理员')
+        return
+      }
+      if (targetUser?.system_role?.name === 'super_admin') {
+        message.warning('仅超级管理员可修改超级管理员的角色')
         return
       }
     }
