@@ -75,7 +75,7 @@ export default function ProjectListPage() {
 
   useEffect(() => {
     fetchProjects()
-  }, [user])
+  }, [user, isSuperAdmin])
 
   const handleCreate = async (values: { name: string; description?: string }) => {
     const { data: project, error } = await supabase
