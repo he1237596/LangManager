@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
   Typography, Table, Card, Tag, Select, Button, Modal, Form, Input, Checkbox,
-  message, Space, Divider, Statistic, Row, Col, Popconfirm, Collapse, Descriptions,
+  message, Space, Divider, Statistic, Row, Col, Popconfirm, Collapse,
 } from 'antd'
 import {
   PlusOutlined, DeleteOutlined, EditOutlined, SafetyOutlined, UserOutlined,
@@ -11,7 +11,7 @@ import { supabase } from '@/api/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import type { Profile, SystemRole, RolePermissions } from '@/types'
 import {
-  DEFAULT_PERMISSIONS, PERMISSION_LABELS,
+  DEFAULT_PERMISSIONS,
 } from '@/types'
 import dayjs from 'dayjs'
 
@@ -290,11 +290,6 @@ export default function SystemSettingsPage() {
       width: 220,
       render: (_: unknown, record: Profile) => {
         const isSelf = record.id === user?.id
-        const roleName = record.system_role?.display_name || '未知'
-        const roleColor = record.system_role?.name === 'super_admin' ? 'red'
-          : record.system_role?.name === 'sys_admin' ? 'orange'
-          : record.system_role?.name === 'operator' ? 'blue'
-          : 'default'
         return (
           <Select
             value={record.role_id}
@@ -649,12 +644,12 @@ export default function SystemSettingsPage() {
             <Select
               options={roles.map(r => {
                 // 非超级管理员不能创建超级管理员
-                if (!isSuperAdmin && r.name === 'super_admin') return null
+                if (!isSuperAdmin && r.name === 'super_admin') return { value: r.name, label: '', disabled: true } as { value: string; label: string; disabled: boolean }
                 return {
                   value: r.name,
                   label: <Tag color={r.name === 'super_admin' ? 'red' : r.name === 'sys_admin' ? 'orange' : r.name === 'operator' ? 'blue' : 'default'}>{r.display_name}</Tag>,
                 }
-              }).filter(Boolean)}
+              }).filter(r => isSuperAdmin || !roles.find(role => role.name === 'super_admin') || r.value !== roles.find(role => role.name === 'super_admin')?.name || isSuperAdmin)}
             />
           </Form.Item>
           <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>
