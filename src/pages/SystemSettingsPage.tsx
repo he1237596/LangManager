@@ -202,7 +202,20 @@ export default function SystemSettingsPage() {
       .update({ role_id: newRoleId, updated_at: new Date().toISOString() })
       .eq('id', userId)
     if (error) { message.error('更新失败: ' + error.message); return }
+    const targetUser = users.find(u => u.id === userId)
+    const newRole = roles.find(r => r.id === newRoleId)
     message.success('角色已更新')
+    await supabase.rpc('log_action', {
+      p_action: 'user_role_change',
+      p_target_type: 'user',
+      p_target_id: userId,
+      p_detail: {
+        email: targetUser?.email,
+        display_name: targetUser?.display_name,
+        old_role: targetUser?.system_role?.display_name,
+        new_role: newRole?.display_name,
+      },
+    })
     fetchUsers()
   }
 
@@ -248,6 +261,11 @@ export default function SystemSettingsPage() {
         })
       if (error) { message.error('创建失败: ' + error.message); return }
       message.success('角色已创建')
+      await supabase.rpc('log_action', {
+        p_action: 'role_create',
+        p_target_type: 'role',
+        p_detail: { name: values.name, display_name: values.display_name },
+      })
     }
     setRoleModalOpen(false)
     setEditingRole(null)
@@ -266,7 +284,14 @@ export default function SystemSettingsPage() {
     }
     const { error } = await supabase.from('roles').delete().eq('id', roleId)
     if (error) { message.error('删除失败: ' + error.message); return }
+    const deletedRole = roles.find(r => r.id === roleId)
     message.success('角色已删除')
+    supabase.rpc('log_action', {
+      p_action: 'role_delete',
+      p_target_type: 'role',
+      p_target_id: roleId,
+      p_detail: { name: deletedRole?.name, display_name: deletedRole?.display_name },
+    })
     fetchRoles()
   }
 

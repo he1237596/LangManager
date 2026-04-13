@@ -89,6 +89,39 @@ export interface TranslationRow {
   translations: Record<string, { id: string; value: string; localeId: string }>
 }
 
+export interface AuditLog {
+  id: string
+  actor_id: string | null
+  actor_email: string | null
+  action: string
+  target_type: string
+  target_id: string | null
+  detail: Record<string, unknown>
+  ip_address: string | null
+  created_at: string
+}
+
+export const AUDIT_ACTION_LABELS: Record<string, string> = {
+  user_create: '创建用户',
+  user_role_change: '变更角色',
+  user_password_reset: '重置密码',
+  role_create: '创建角色',
+  role_update: '更新角色',
+  role_delete: '删除角色',
+  project_create: '创建项目',
+  project_delete: '删除项目',
+  member_add: '添加成员',
+  member_remove: '移除成员',
+  member_role_change: '变更成员角色',
+}
+
+export const AUDIT_TARGET_LABELS: Record<string, string> = {
+  user: '用户',
+  role: '角色',
+  project: '项目',
+  member: '成员',
+}
+
 // 项目级别角色
 export const PROJECT_ROLE_LABELS: Record<ProjectRole, string> = {
   admin: '管理员',

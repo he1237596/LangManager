@@ -12,6 +12,7 @@ import ProjectListPage from '@/pages/ProjectListPage'
 import ProjectDetailPage from '@/pages/ProjectDetailPage'
 import ProjectSettingsPage from '@/pages/ProjectSettingsPage'
 import SystemSettingsPage from '@/pages/SystemSettingsPage'
+import AuditLogPage from '@/pages/AuditLogPage'
 
 export default function App() {
   return (
@@ -40,6 +41,7 @@ export default function App() {
               <Route path="project/:projectId" element={<ProjectDetailPage />} />
               <Route path="project/:projectId/settings" element={<ProjectSettingsPage />} />
               <Route path="settings" element={<SystemSettingsPage />} />
+              <Route path="audit-logs" element={<AuditLogPage />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

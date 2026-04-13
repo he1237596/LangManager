@@ -677,5 +677,50 @@ END;
 $$;
 
 -- ============================================
+-- 17. 审计日志
+-- ============================================
+CREATE TABLE public.audit_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  actor_id UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  actor_email TEXT,
+  action TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_id TEXT,
+  detail JSONB DEFAULT '{}'::jsonb,
+  ip_address TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "audit_logs_select" ON public.audit_logs
+  FOR SELECT USING (
+    public.has_system_permission(auth.uid(), 'manage_users')
+    OR public.is_super_admin(auth.uid())
+  );
+
+-- 记录日志的 RPC 函数
+CREATE OR REPLACE FUNCTION public.log_action(
+  p_action TEXT,
+  p_target_type TEXT,
+  p_target_id TEXT DEFAULT NULL,
+  p_detail JSONB DEFAULT '{}'::jsonb
+)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_email TEXT;
+BEGIN
+  SELECT email INTO v_email FROM public.profiles WHERE id = auth.uid();
+  INSERT INTO public.audit_logs (actor_id, actor_email, action, target_type, target_id, detail)
+  VALUES (auth.uid(), v_email, p_action, p_target_type, p_target_id, p_detail);
+END;
+$$;
+
+-- 索引加速查询
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON public.audit_logs (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON public.audit_logs (action);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_target ON public.audit_logs (target_type, target_id);
+
+-- ============================================
 -- 完成！
 -- ============================================

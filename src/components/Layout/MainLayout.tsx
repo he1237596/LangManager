@@ -11,6 +11,7 @@ import {
   GlobalOutlined,
   EditOutlined,
   LockOutlined,
+  FileSearchOutlined
 } from '@ant-design/icons'
 import { useAuth } from '@/contexts/AuthContext'
 import type { MenuProps } from 'antd'
@@ -40,6 +41,10 @@ export default function MainLayout() {
       key: '/settings',
       icon: <SettingOutlined />,
       label: '系统设置',
+    }, {
+      key: '/audit-logs',
+      icon: <FileSearchOutlined />,
+      label: '审计日志',
     }] : []),
   ]
 
