@@ -3,3 +3,8 @@
 node_modules
 dist
 *.local
+ARTICLE
+test-locales
+.playwright-cli
+login.yaml
+docs

@@ -5,7 +5,7 @@ import {
 } from 'antd'
 import {
   PlusOutlined, DeleteOutlined, ArrowLeftOutlined, UserAddOutlined, EditOutlined,
-  HolderOutlined,
+  HolderOutlined, HistoryOutlined, ClearOutlined, ApiOutlined, CopyOutlined, ReloadOutlined, EyeOutlined, EyeInvisibleOutlined,
 } from '@ant-design/icons'
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragOverlay } from '@dnd-kit/core'
 import type { DragEndEvent, DragStartEvent } from '@dnd-kit/core'
@@ -57,6 +57,7 @@ export default function ProjectSettingsPage() {
 
   const [projectName, setProjectName] = useState('')
   const [projectDescription, setProjectDescription] = useState('')
+  const [logEnabled, setLogEnabled] = useState(true)
   const [locales, setLocales] = useState<Locale[]>([])
   const [members, setMembers] = useState<(ProjectMember & { profile?: Profile })[]>([])
   const [loading, setLoading] = useState(true)
@@ -77,12 +78,14 @@ export default function ProjectSettingsPage() {
     if (!projectId) return
     const { data } = await supabase
       .from('projects')
-      .select('name, description')
+      .select('name, description, log_enabled, public_token')
       .eq('id', projectId)
       .single()
     if (data) {
       setProjectName(data.name)
       setProjectDescription(data.description || '')
+      setLogEnabled(data.log_enabled ?? true)
+      setPublicToken(data.public_token || null)
     }
   }, [projectId])
 
@@ -97,7 +100,7 @@ export default function ProjectSettingsPage() {
       .select('role')
       .eq('project_id', projectId)
       .eq('user_id', user.id)
-      .single()
+      .maybeSingle()
     if (data) setMyRole(data.role as ProjectRole)
   }, [user, projectId, isSuperAdmin])
 
@@ -181,7 +184,7 @@ export default function ProjectSettingsPage() {
     if (!editingLocale) return
     const { error } = await supabase
       .from('locales')
-      .update({ code: values.code.trim(), name: values.name.trim(), updated_at: new Date().toISOString() })
+      .update({ code: values.code.trim(), name: values.name.trim() })
       .eq('id', editingLocale.id)
     if (error) { message.error('更新失败: ' + error.message); return }
     message.success('语言已更新')
@@ -284,6 +287,175 @@ export default function ProjectSettingsPage() {
     if (error) { message.error('移除失败'); return }
     message.success('成员已移除')
     fetchMembers()
+  }
+
+  // --- Log Management (Super Admin Only) ---
+  const [logCount, setLogCount] = useState(0)
+  const [logLoading, setLogLoading] = useState(false)
+
+  // --- API Integration (Super Admin Only) ---
+  const [publicToken, setPublicToken] = useState<string | null>(null)
+  const [tokenVisible, setTokenVisible] = useState(false)
+  const [tokenLoading, setTokenLoading] = useState(false)
+
+  const fetchLogCount = useCallback(async () => {
+    if (!projectId) return
+    const { count } = await supabase
+      .from('translation_history')
+      .select('*', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+    setLogCount(count || 0)
+  }, [projectId])
+
+  useEffect(() => {
+    if (isSuperAdmin) fetchLogCount()
+  }, [isSuperAdmin, fetchLogCount])
+
+  const handleToggleLog = async (checked: boolean) => {
+    if (!projectId) return
+    const { error } = await supabase
+      .from('projects')
+      .update({ log_enabled: checked, updated_at: new Date().toISOString() })
+      .eq('id', projectId)
+    if (error) { message.error('更新失败'); return }
+    setLogEnabled(checked)
+    message.success(checked ? '已开启翻译日志' : '已关闭翻译日志')
+  }
+
+  const handleCleanLogs = async (days: number) => {
+    if (!projectId) return
+    setLogLoading(true)
+    const { error } = await supabase
+      .from('translation_history')
+      .delete()
+      .eq('project_id', projectId)
+      .lt('created_at', new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString())
+    if (error) { message.error('清理失败'); setLogLoading(false); return }
+    message.success(`已清理 ${days} 天前的日志`)
+    fetchLogCount()
+    setLogLoading(false)
+  }
+
+  const handleCleanAllLogs = async () => {
+    if (!projectId) return
+    Modal.confirm({
+      title: '确认清理全部日志？',
+      content: `此操作将删除该项目下的所有 ${logCount} 条修改历史记录，不可恢复。`,
+      okText: '确认清理',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        setLogLoading(true)
+        const { error } = await supabase
+          .from('translation_history')
+          .delete()
+          .eq('project_id', projectId)
+        if (error) { message.error('清理失败'); setLogLoading(false); return }
+        message.success('已清理全部日志')
+        setLogCount(0)
+        setLogLoading(false)
+      },
+    })
+  }
+
+  // --- API Token Management ---
+  const handleGenerateToken = async () => {
+    if (!projectId) return
+    Modal.confirm({
+      title: publicToken ? '重新生成 API 令牌？' : '生成 API 令牌？',
+      content: publicToken
+        ? '重新生成后，旧令牌将立即失效，使用旧令牌的项目需要更新配置。'
+        : '生成后可通过此令牌在开发时实时拉取翻译，或批量导出 JSON。',
+      okText: '确认',
+      cancelText: '取消',
+      onOk: async () => {
+        setTokenLoading(true)
+        // 在前端生成 32 位随机 token
+        const chars = '0123456789abcdef'
+        let token = ''
+        const arr = new Uint8Array(16)
+        crypto.getRandomValues(arr)
+        for (const b of arr) token += chars[b % 16]
+        const { error } = await supabase
+          .from('projects')
+          .update({ public_token: token, updated_at: new Date().toISOString() })
+          .eq('id', projectId)
+        if (error) { message.error('生成失败'); setTokenLoading(false); return }
+        setPublicToken(token)
+        setTokenVisible(true)
+        message.success('令牌已生成')
+        setTokenLoading(false)
+      },
+    })
+  }
+
+  const handleRevokeToken = async () => {
+    if (!projectId) return
+    Modal.confirm({
+      title: '吊销 API 令牌？',
+      content: '吊销后所有通过此令牌的访问将立即失效，此操作不可恢复。',
+      okText: '确认吊销',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        setTokenLoading(true)
+        const { error } = await supabase
+          .from('projects')
+          .update({ public_token: null })
+          .eq('id', projectId)
+        if (error) { message.error('吊销失败'); setTokenLoading(false); return }
+        setPublicToken(null)
+        setTokenVisible(false)
+        message.success('令牌已吊销')
+        setTokenLoading(false)
+      },
+    })
+  }
+
+  const copyText = (text: string) => {
+    navigator.clipboard.writeText(text)
+    message.success('已复制到剪贴板')
+  }
+
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+  const apiUrl = `${supabaseUrl}/functions/v1/i18n`
+
+  const getSdkCode = () => {
+    return `// lang-manager.ts - 放入你的前端项目
+const API_URL = '${apiUrl}'
+const TOKEN = '${publicToken}'
+
+// 推荐：一次请求获取所有语言（响应缓存 60 秒）
+async function fetchAllTranslations() {
+  const res = await fetch(\`\${API_URL}/translations/all?token=\${TOKEN}\`)
+  if (!res.ok) throw new Error('Failed to fetch translations')
+  return res.json() as Promise<Record<string, Record<string, string>>>
+}
+
+// 按需：获取单个语言
+async function fetchTranslations(locale: string) {
+  const res = await fetch(\`\${API_URL}/translations?token=\${TOKEN}&locale=\${locale}\`)
+  if (!res.ok) throw new Error('Failed to fetch translations')
+  return res.json()
+}
+
+// ---- 用法示例 ----
+
+// React + react-i18next（推荐 all 接口，一次加载所有语言）:
+// import i18n from 'i18next'
+// const isDev = import.meta.env.DEV
+// const allTranslations = isDev ? await fetchAllTranslations() : null
+// i18n.init({
+//   resources: Object.fromEntries(
+//     Object.entries(allTranslations || {}).map(([locale, msgs]) => [locale, { translation: msgs }])
+//   ),
+// })
+
+// Vue 3 + vue-i18n:
+// import { createI18n } from 'vue-i18n'
+// const isDev = import.meta.env.DEV
+// const allTranslations = isDev ? await fetchAllTranslations() : {}
+// const i18n = createI18n({ legacy: false, locale: 'zh-CN', messages: allTranslations })`
   }
 
   const localeColumns = [
@@ -471,6 +643,180 @@ export default function ProjectSettingsPage() {
         </div>
       ),
     },
+    ...(isSuperAdmin ? [{
+      key: 'logs',
+      label: '日志管理',
+      children: (
+        <div style={{ maxWidth: 600 }}>
+          <div style={{ marginBottom: 24 }}>
+            <Space size="large" align="center">
+              <Space>
+                <HistoryOutlined />
+                <Text strong>翻译修改日志</Text>
+              </Space>
+              <Switch
+                checked={logEnabled}
+                onChange={handleToggleLog}
+                checkedChildren="已开启"
+                unCheckedChildren="已关闭"
+              />
+            </Space>
+            <div style={{ marginTop: 8 }}>
+              <Text type="secondary">开启后，每次翻译内容的修改将自动记录历史</Text>
+            </div>
+          </div>
+
+          <div style={{ padding: 16, background: '#fafafa', borderRadius: 8, marginBottom: 24 }}>
+            <Space style={{ marginBottom: 12 }}>
+              <Text>当前日志记录数：</Text>
+              <Tag color="blue">{logCount} 条</Tag>
+            </Space>
+            <div>
+              <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>按时间范围清理：</Text>
+              <Space wrap>
+                <Button
+                  icon={<ClearOutlined />}
+                  loading={logLoading}
+                  disabled={!logEnabled || logCount === 0}
+                  onClick={() => handleCleanLogs(30)}
+                >
+                  清理 30 天前
+                </Button>
+                <Button
+                  icon={<ClearOutlined />}
+                  loading={logLoading}
+                  disabled={!logEnabled || logCount === 0}
+                  onClick={() => handleCleanLogs(90)}
+                >
+                  清理 90 天前
+                </Button>
+                <Button
+                  danger
+                  icon={<DeleteOutlined />}
+                  loading={logLoading}
+                  disabled={logCount === 0}
+                  onClick={handleCleanAllLogs}
+                >
+                  清理全部
+                </Button>
+              </Space>
+            </div>
+          </div>
+        </div>
+      ),
+    }] : []),
+    ...(isSuperAdmin ? [{
+      key: 'api',
+      label: 'API 接入',
+      children: (
+        <div style={{ maxWidth: 700 }}>
+          <div style={{ marginBottom: 24 }}>
+            <Space size="large" align="center">
+              <Space>
+                <ApiOutlined />
+                <Text strong>公开 API 令牌</Text>
+              </Space>
+              {publicToken ? (
+                <Tag color="green">已启用</Tag>
+              ) : (
+                <Tag color="default">未启用</Tag>
+              )}
+            </Space>
+            <div style={{ marginTop: 8 }}>
+              <Text type="secondary">
+                通过令牌在开发时实时拉取翻译，或通过脚本批量下载 JSON。令牌仅允许只读访问翻译数据。
+              </Text>
+            </div>
+          </div>
+
+          {publicToken ? (
+            <div style={{ marginBottom: 24 }}>
+              <Text style={{ display: 'block', marginBottom: 8 }}>当前令牌：</Text>
+              <Space.Compact style={{ width: '100%' }}>
+                <Input
+                  style={{ flex: 1, fontFamily: 'monospace' }}
+                  value={tokenVisible ? publicToken : '•'.repeat(32)}
+                  readOnly
+                />
+                <Button icon={tokenVisible ? <EyeInvisibleOutlined /> : <EyeOutlined />} onClick={() => setTokenVisible(!tokenVisible)} />
+                <Button icon={<CopyOutlined />} onClick={() => copyText(publicToken)}>复制</Button>
+                <Button icon={<ReloadOutlined />} loading={tokenLoading} onClick={handleGenerateToken}>重新生成</Button>
+                <Button danger icon={<DeleteOutlined />} loading={tokenLoading} onClick={handleRevokeToken}>吊销</Button>
+              </Space.Compact>
+            </div>
+          ) : (
+            <div style={{ marginBottom: 24 }}>
+              <Button type="primary" icon={<ApiOutlined />} loading={tokenLoading} onClick={handleGenerateToken}>
+                生成 API 令牌
+              </Button>
+            </div>
+          )}
+
+          {publicToken && (
+            <>
+              <div style={{ marginBottom: 16 }}>
+                <Text style={{ display: 'block', marginBottom: 8, fontWeight: 500 }}>API 端点：</Text>
+                <div style={{ background: '#f5f5f5', borderRadius: 6, padding: '12px 16px' }}>
+                  <div style={{ marginBottom: 8 }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>获取单个语言翻译</Text>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <code style={{ fontSize: 12, wordBreak: 'break-all' }}>
+                        GET {apiUrl}/translations?token=...&amp;locale=zh-CN
+                      </code>
+                      <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => copyText(`${apiUrl}/translations?token=${publicToken}&locale=zh-CN`)} />
+                    </div>
+                  </div>
+                  <div style={{ marginBottom: 8 }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>获取所有语言翻译（批量）</Text>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <code style={{ fontSize: 12, wordBreak: 'break-all' }}>
+                        GET {apiUrl}/translations/all?token=...
+                      </code>
+                      <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => copyText(`${apiUrl}/translations/all?token=${publicToken}`)} />
+                    </div>
+                  </div>
+                  <div>
+                    <Text type="secondary" style={{ fontSize: 12 }}>获取语言列表</Text>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <code style={{ fontSize: 12, wordBreak: 'break-all' }}>
+                        GET {apiUrl}/locales?token=...
+                      </code>
+                      <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => copyText(`${apiUrl}/locales?token=${publicToken}`)} />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <Text style={{ fontWeight: 500 }}>接入代码（复制到你的前端项目）</Text>
+                  <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => copyText(getSdkCode())}>复制全部</Button>
+                </div>
+                <pre style={{
+                  background: '#1e1e1e', color: '#d4d4d4', borderRadius: 8, padding: 16,
+                  fontSize: 12, lineHeight: 1.6, overflowX: 'auto', maxHeight: 350, overflowY: 'auto',
+                }}>
+                  {getSdkCode()}
+                </pre>
+              </div>
+
+              <div style={{ marginTop: 16 }}>
+                <Text style={{ display: 'block', marginBottom: 8, fontWeight: 500 }}>批量下载（上线前使用）</Text>
+                <pre style={{
+                  background: '#1e1e1e', color: '#d4d4d4', borderRadius: 8, padding: 16,
+                  fontSize: 12, lineHeight: 1.6, overflowX: 'auto',
+                }}>{`# 一键下载所有语言翻译为 JSON 文件
+node scripts/download-locales.mjs \\
+  --api-url ${apiUrl} \\
+  --token ${publicToken} \\
+  --output ./src/locales`}
+                </pre>
+              </div>
+            </>
+          )}
+        </div>
+      ),
+    }] : []),
   ]
 
   return (
