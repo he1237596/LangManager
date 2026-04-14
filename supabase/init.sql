@@ -585,6 +585,69 @@ CREATE TRIGGER translations_updated_at BEFORE UPDATE ON public.translations
   FOR EACH ROW EXECUTE FUNCTION public.update_updated_at();
 
 -- ============================================
+-- 14.5 翻译修改历史
+-- ============================================
+CREATE TABLE public.translation_history (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES public.projects(id) ON DELETE CASCADE,
+  translation_id UUID NOT NULL,
+  key_name TEXT,
+  locale_code TEXT,
+  locale_name TEXT,
+  old_value TEXT DEFAULT '',
+  new_value TEXT DEFAULT '',
+  updated_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  updater_email TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.translation_history ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "translation_history_select" ON public.translation_history
+  FOR SELECT USING (
+    public.is_project_member(project_id, auth.uid())
+    OR public.is_super_admin(auth.uid())
+  );
+
+CREATE OR REPLACE FUNCTION public.log_translation_change()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_project_id UUID;
+  v_key_name TEXT;
+  v_locale_code TEXT;
+  v_locale_name TEXT;
+  v_updater_email TEXT;
+BEGIN
+  SELECT project_id INTO v_project_id FROM public.translation_keys WHERE id = NEW.key_id;
+  SELECT "key" INTO v_key_name FROM public.translation_keys WHERE id = NEW.key_id;
+  SELECT code, name INTO v_locale_code, v_locale_name FROM public.locales WHERE id = NEW.locale_id;
+  SELECT email INTO v_updater_email FROM public.profiles WHERE id = NEW.updated_by;
+
+  IF TG_OP = 'UPDATE' THEN
+    IF OLD.value IS DISTINCT FROM NEW.value THEN
+      INSERT INTO public.translation_history (project_id, translation_id, key_name, locale_code, locale_name, old_value, new_value, updated_by, updater_email)
+      VALUES (v_project_id, NEW.id, v_key_name, v_locale_code, v_locale_name, OLD.value, NEW.value, NEW.updated_by, v_updater_email);
+    END IF;
+  ELSIF TG_OP = 'INSERT' THEN
+    IF NEW.value IS NOT NULL AND NEW.value != '' THEN
+      INSERT INTO public.translation_history (project_id, translation_id, key_name, locale_code, locale_name, old_value, new_value, updated_by, updater_email)
+      VALUES (v_project_id, NEW.id, v_key_name, v_locale_code, v_locale_name, '', NEW.value, NEW.updated_by, v_updater_email);
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS translations_history_trigger ON public.translations;
+CREATE TRIGGER translations_history_trigger
+  AFTER INSERT OR UPDATE ON public.translations
+  FOR EACH ROW EXECUTE FUNCTION public.log_translation_change();
+
+CREATE INDEX IF NOT EXISTS idx_translation_history_project ON public.translation_history (project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_translation_history_translation ON public.translation_history (translation_id, created_at DESC);
+
+-- ============================================
 -- 15. 管理员创建用户 RPC
 --     超级管理员可直接创建用户（无需邮箱验证）
 -- ============================================

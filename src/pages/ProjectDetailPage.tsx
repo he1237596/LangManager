@@ -7,7 +7,7 @@ import {
 } from 'antd'
 import {
   PlusOutlined, DeleteOutlined, ExportOutlined, SettingOutlined, EditOutlined,
-  SearchOutlined, DownloadOutlined, ExclamationCircleOutlined,
+  SearchOutlined, DownloadOutlined, ExclamationCircleOutlined, HistoryOutlined,
 } from '@ant-design/icons'
 import JSZip from 'jszip'
 import { supabase } from '@/api/supabase'
@@ -63,6 +63,22 @@ export default function ProjectDetailPage() {
   const [editValueOpen, setEditValueOpen] = useState(false)
   const [editingCell, setEditingCell] = useState<{ keyId: string; localeId: string; localeName: string; currentValue: string; rowKey: string } | null>(null)
   const [editValue, setEditValue] = useState('')
+
+  // Translation history
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [historyData, setHistoryData] = useState<Array<{
+    id: string; key_name: string; locale_code: string; locale_name: string;
+    old_value: string; new_value: string; updater_email: string; created_at: string;
+  }>>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyTarget, setHistoryTarget] = useState<{ keyId: string; localeId: string; localeName: string; rowKey: string } | null>(null)
+  const [historyAllOpen, setHistoryAllOpen] = useState(false)
+  const [historyAllData, setHistoryAllData] = useState<Array<{
+    id: string; key_name: string; locale_code: string; locale_name: string;
+    old_value: string; new_value: string; updater_email: string; created_at: string;
+  }>>([])
+  const [historyAllLoading, setHistoryAllLoading] = useState(false)
+  const [historyAllTarget, setHistoryAllTarget] = useState<{ keyId: string; rowKey: string } | null>(null)
 
   const fetchMyRole = useCallback(async () => {
     if (!user || !projectId) return
@@ -274,6 +290,60 @@ export default function ProjectDetailPage() {
     setEditValueOpen(false)
     setEditingCell(null)
     doFetch()
+  }
+
+  const openHistory = async (keyId: string, localeId: string, localeName: string, rowKey: string) => {
+    setHistoryTarget({ keyId, localeId, localeName, rowKey })
+    setHistoryOpen(true)
+    setHistoryLoading(true)
+    setHistoryData([])
+
+    // 获取该翻译的 ID
+    const { data: trans } = await supabase
+      .from('translations')
+      .select('id')
+      .eq('key_id', keyId)
+      .eq('locale_id', localeId)
+      .single()
+
+    if (!trans) { setHistoryLoading(false); return }
+
+    const { data } = await supabase
+      .from('translation_history')
+      .select('key_name, locale_code, locale_name, old_value, new_value, updater_email, created_at')
+      .eq('translation_id', trans.id)
+      .order('created_at', { ascending: false })
+      .limit(50)
+
+    setHistoryData((data || []) as typeof historyData)
+    setHistoryLoading(false)
+  }
+
+  // 查看某个 Key 所有语言的修改历史
+  const openHistoryAllLocales = async (keyId: string, rowKey: string) => {
+    setHistoryAllTarget({ keyId, rowKey })
+    setHistoryAllOpen(true)
+    setHistoryAllLoading(true)
+    setHistoryAllData([])
+
+    // 获取该 Key 下所有翻译的 ID
+    const { data: trans } = await supabase
+      .from('translations')
+      .select('id')
+      .eq('key_id', keyId)
+
+    if (!trans || trans.length === 0) { setHistoryAllLoading(false); return }
+
+    const transIds = trans.map(t => t.id)
+    const { data } = await supabase
+      .from('translation_history')
+      .select('key_name, locale_code, locale_name, old_value, new_value, updater_email, created_at')
+      .in('translation_id', transIds)
+      .order('created_at', { ascending: false })
+      .limit(100)
+
+    setHistoryAllData((data || []) as typeof historyAllData)
+    setHistoryAllLoading(false)
   }
 
   // --- Row Edit (description + all translations) ---
@@ -489,7 +559,7 @@ export default function ProjectDetailPage() {
       title: 'Key',
       dataIndex: 'key',
       key: 'key',
-      width: 250,
+      width: 187,
       fixed: 'left' as const,
       sorter: true,
       sortOrder: sortField === 'key' ? (sortOrder === 'asc' ? 'ascend' : 'descend') : undefined,
@@ -575,13 +645,14 @@ export default function ProjectDetailPage() {
       sortOrder: sortField === 'updated_at' ? (sortOrder === 'asc' ? 'ascend' : 'descend') : undefined,
       render: (v: string) => v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '-',
     },
-    ...((perms.canAddKey || perms.canEditKey || perms.canEditValue || perms.canDeleteKey) ? [{
+    ...([{
       title: '操作',
       key: 'actions',
       width: 100,
       fixed: 'right' as const,
       render: (_: unknown, record: TranslationRow) => (
         <Space size={4}>
+          <Button type="text" icon={<HistoryOutlined />} size="small" title="修改历史" onClick={() => openHistoryAllLocales(record.keyId, record.key || '')} />
           {(perms.canEditKey && perms.canEditValue) && (
             <Button type="text" icon={<EditOutlined />} size="small" onClick={() => openRowEdit(record)} />
           )}
@@ -600,7 +671,7 @@ export default function ProjectDetailPage() {
           )}
         </Space>
       ),
-    }] : []),
+    }]),
   ]
 
   return (
@@ -751,10 +822,14 @@ export default function ProjectDetailPage() {
       <Modal
         title={editingCell ? `编辑翻译 - ${editingCell.localeName}` : '编辑翻译'}
         open={editValueOpen}
-        onOk={handleSaveValue}
         onCancel={() => { setEditValueOpen(false); setEditingCell(null) }}
-        okText="保存"
-        cancelText="取消"
+        footer={[
+          <Button key="history" icon={<HistoryOutlined />} onClick={() => editingCell && openHistory(editingCell.keyId, editingCell.localeId, editingCell.localeName, editingCell.rowKey)}>
+            修改历史
+          </Button>,
+          <Button key="cancel" onClick={() => { setEditValueOpen(false); setEditingCell(null) }}>取消</Button>,
+          <Button key="ok" type="primary" onClick={handleSaveValue}>保存</Button>,
+        ]}
         width={600}
       >
         {editingCell && (
@@ -814,6 +889,82 @@ export default function ProjectDetailPage() {
               ))}
             </div>
           </>
+        )}
+      </Modal>
+
+      {/* Translation History Modal */}
+      <Modal
+        title={historyTarget ? `修改历史 - ${historyTarget.localeName} (${historyTarget.rowKey || '待填写'})` : '修改历史'}
+        open={historyOpen}
+        onCancel={() => setHistoryOpen(false)}
+        footer={<Button onClick={() => setHistoryOpen(false)}>关闭</Button>}
+        width={700}
+      >
+        {historyLoading ? (
+          <div style={{ textAlign: 'center', padding: 24 }}>加载中...</div>
+        ) : historyData.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: 24, color: '#999' }}>暂无修改记录</div>
+        ) : (
+          <div style={{ maxHeight: 400, overflowY: 'auto' }}>
+            {historyData.map((h, i) => (
+              <div key={h.id || i} style={{ padding: '8px 0', borderBottom: i < historyData.length - 1 ? '1px solid #f0f0f0' : 'none' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {h.updater_email || '未知'} · {dayjs(h.created_at).format('YYYY-MM-DD HH:mm:ss')}
+                  </Text>
+                </div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                  <Text delete style={{ color: '#ff4d4f', fontSize: 12, maxWidth: 280, wordBreak: 'break-all' }}>
+                    {h.old_value || '(空)'}
+                  </Text>
+                  <Text style={{ flexShrink: 0 }}>-&gt;</Text>
+                  <Text style={{ color: '#52c41a', fontSize: 12, maxWidth: 280, wordBreak: 'break-all' }}>
+                    {h.new_value || '(空)'}
+                  </Text>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Modal>
+
+      {/* All-Locale Translation History Modal */}
+      <Modal
+        title={historyAllTarget ? `修改历史 - ${historyAllTarget.rowKey || '待填写'}（所有语言）` : '修改历史'}
+        open={historyAllOpen}
+        onCancel={() => setHistoryAllOpen(false)}
+        footer={<Button onClick={() => setHistoryAllOpen(false)}>关闭</Button>}
+        width={750}
+      >
+        {historyAllLoading ? (
+          <div style={{ textAlign: 'center', padding: 24 }}>加载中...</div>
+        ) : historyAllData.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: 24, color: '#999' }}>暂无修改记录</div>
+        ) : (
+          <div style={{ maxHeight: 450, overflowY: 'auto' }}>
+            {historyAllData.map((h, i) => (
+              <div key={h.id || i} style={{ padding: '8px 0', borderBottom: i < historyAllData.length - 1 ? '1px solid #f0f0f0' : 'none' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                  <Space>
+                    <Tag style={{ fontSize: 11 }}>{h.locale_name}</Tag>
+                    <Text code style={{ fontSize: 11 }}>{h.locale_code}</Text>
+                  </Space>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {h.updater_email || '未知'} · {dayjs(h.created_at).format('YYYY-MM-DD HH:mm:ss')}
+                  </Text>
+                </div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                  <Text delete style={{ color: '#ff4d4f', fontSize: 12, maxWidth: 300, wordBreak: 'break-all' }}>
+                    {h.old_value || '(空)'}
+                  </Text>
+                  <Text style={{ flexShrink: 0 }}>-&gt;</Text>
+                  <Text style={{ color: '#52c41a', fontSize: 12, maxWidth: 300, wordBreak: 'break-all' }}>
+                    {h.new_value || '(空)'}
+                  </Text>
+                </div>
+              </div>
+            ))}
+          </div>
         )}
       </Modal>
 

@@ -1,7 +1,8 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react'
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react'
 import type { User, Session } from '@supabase/supabase-js'
 import { supabase } from '@/api/supabase'
 import type { Profile, SystemRole, RolePermissions } from '@/types'
+import { Modal, Button } from 'antd'
 
 interface AuthContextType {
   user: User | null
@@ -19,6 +20,11 @@ interface AuthContextType {
   changePassword: (newPassword: string) => Promise<{ error: string | null }>
   refreshProfile: () => Promise<void>
 }
+
+// 空闲超时配置（大厂标准）
+const IDLE_TIMEOUT_MS = 2 * 24 * 60 * 60 * 1000  // 2 天无操作
+const WARNING_BEFORE_MS = 30 * 60 * 1000          // 过期前 30 分钟提醒
+const CHECK_INTERVAL_MS = 60 * 1000                // 每 60 秒检查一次
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
@@ -42,6 +48,77 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [systemRole, setSystemRole] = useState<SystemRole | null>(null)
   const [session, setSession] = useState<Session | null>(null)
   const [loading, setLoading] = useState(true)
+  const lastActivityRef = useRef<number>(Date.now())
+  const warningShownRef = useRef(false)
+  const countdownRef = useRef<NodeJS.Timeout | null>(null)
+
+  // 记录用户活动，重置空闲计时器
+  const recordActivity = useCallback(() => {
+    lastActivityRef.current = Date.now()
+    warningShownRef.current = false
+  }, [])
+
+  // 空闲超时检测 & 过期提醒
+  useEffect(() => {
+    if (!user) return
+
+    const activityEvents = ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart', 'click']
+    const handleActivity = () => recordActivity()
+    activityEvents.forEach((evt) => window.addEventListener(evt, handleActivity, { passive: true }))
+
+    const timer = setInterval(() => {
+      const idleTime = Date.now() - lastActivityRef.current
+      const remaining = IDLE_TIMEOUT_MS - idleTime
+
+      // 已超时 → 自动登出
+      if (remaining <= 0) {
+        window.removeEventListener('focus', handleActivity)
+        Modal.warning({
+          title: '会话已过期',
+          content: '由于长时间未操作，您已被自动登出。请重新登录。',
+          okText: '重新登录',
+          onOk: () => {
+            window.location.href = '/login'
+          },
+        })
+        supabase.auth.signOut()
+        clearInterval(timer)
+        return
+      }
+
+      // 即将超时 & 未提醒 → 弹窗提醒
+      if (remaining <= WARNING_BEFORE_MS && !warningShownRef.current) {
+        warningShownRef.current = true
+        const minutes = Math.ceil(remaining / 60000)
+        let secondsLeft = Math.ceil(remaining / 1000)
+
+        const modal = Modal.warning({
+          title: '会话即将过期',
+          content: `您已 ${Math.floor(idleTime / 60000)} 分钟未操作，${minutes} 分钟后将自动登出。`,
+          okText: '继续操作',
+          onOk: () => {
+            recordActivity()
+            clearInterval(countdownRef.current!)
+          },
+        })
+
+        // 倒计时自动关闭（到达超时时间时关闭提醒，由上面的超时逻辑处理登出）
+        countdownRef.current = setInterval(() => {
+          secondsLeft = Math.max(0, Math.ceil((IDLE_TIMEOUT_MS - (Date.now() - lastActivityRef.current)) / 1000))
+          if (secondsLeft <= 0) {
+            clearInterval(countdownRef.current!)
+            modal.destroy()
+          }
+        }, 1000)
+      }
+    }, CHECK_INTERVAL_MS)
+
+    return () => {
+      clearInterval(timer)
+      clearInterval(countdownRef.current!)
+      activityEvents.forEach((evt) => window.removeEventListener(evt, handleActivity))
+    }
+  }, [user, recordActivity])
 
   const fetchProfile = useCallback(async (userId: string) => {
     try {
