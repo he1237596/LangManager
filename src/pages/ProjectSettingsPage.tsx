@@ -5,7 +5,7 @@ import {
 } from 'antd'
 import {
   PlusOutlined, DeleteOutlined, ArrowLeftOutlined, UserAddOutlined, EditOutlined,
-  HolderOutlined,
+  HolderOutlined, HistoryOutlined, ClearOutlined,
 } from '@ant-design/icons'
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragOverlay } from '@dnd-kit/core'
 import type { DragEndEvent, DragStartEvent } from '@dnd-kit/core'
@@ -57,6 +57,7 @@ export default function ProjectSettingsPage() {
 
   const [projectName, setProjectName] = useState('')
   const [projectDescription, setProjectDescription] = useState('')
+  const [logEnabled, setLogEnabled] = useState(true)
   const [locales, setLocales] = useState<Locale[]>([])
   const [members, setMembers] = useState<(ProjectMember & { profile?: Profile })[]>([])
   const [loading, setLoading] = useState(true)
@@ -77,12 +78,13 @@ export default function ProjectSettingsPage() {
     if (!projectId) return
     const { data } = await supabase
       .from('projects')
-      .select('name, description')
+      .select('name, description, log_enabled')
       .eq('id', projectId)
       .single()
     if (data) {
       setProjectName(data.name)
       setProjectDescription(data.description || '')
+      setLogEnabled(data.log_enabled ?? true)
     }
   }, [projectId])
 
@@ -181,7 +183,7 @@ export default function ProjectSettingsPage() {
     if (!editingLocale) return
     const { error } = await supabase
       .from('locales')
-      .update({ code: values.code.trim(), name: values.name.trim(), updated_at: new Date().toISOString() })
+      .update({ code: values.code.trim(), name: values.name.trim() })
       .eq('id', editingLocale.id)
     if (error) { message.error('更新失败: ' + error.message); return }
     message.success('语言已更新')
@@ -284,6 +286,70 @@ export default function ProjectSettingsPage() {
     if (error) { message.error('移除失败'); return }
     message.success('成员已移除')
     fetchMembers()
+  }
+
+  // --- Log Management (Super Admin Only) ---
+  const [logCount, setLogCount] = useState(0)
+  const [logLoading, setLogLoading] = useState(false)
+
+  const fetchLogCount = useCallback(async () => {
+    if (!projectId) return
+    const { count } = await supabase
+      .from('translation_history')
+      .select('*', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+    setLogCount(count || 0)
+  }, [projectId])
+
+  useEffect(() => {
+    if (isSuperAdmin) fetchLogCount()
+  }, [isSuperAdmin, fetchLogCount])
+
+  const handleToggleLog = async (checked: boolean) => {
+    if (!projectId) return
+    const { error } = await supabase
+      .from('projects')
+      .update({ log_enabled: checked, updated_at: new Date().toISOString() })
+      .eq('id', projectId)
+    if (error) { message.error('更新失败'); return }
+    setLogEnabled(checked)
+    message.success(checked ? '已开启翻译日志' : '已关闭翻译日志')
+  }
+
+  const handleCleanLogs = async (days: number) => {
+    if (!projectId) return
+    setLogLoading(true)
+    const { error } = await supabase
+      .from('translation_history')
+      .delete()
+      .eq('project_id', projectId)
+      .lt('created_at', new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString())
+    if (error) { message.error('清理失败'); setLogLoading(false); return }
+    message.success(`已清理 ${days} 天前的日志`)
+    fetchLogCount()
+    setLogLoading(false)
+  }
+
+  const handleCleanAllLogs = async () => {
+    if (!projectId) return
+    Modal.confirm({
+      title: '确认清理全部日志？',
+      content: `此操作将删除该项目下的所有 ${logCount} 条修改历史记录，不可恢复。`,
+      okText: '确认清理',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        setLogLoading(true)
+        const { error } = await supabase
+          .from('translation_history')
+          .delete()
+          .eq('project_id', projectId)
+        if (error) { message.error('清理失败'); setLogLoading(false); return }
+        message.success('已清理全部日志')
+        setLogCount(0)
+        setLogLoading(false)
+      },
+    })
   }
 
   const localeColumns = [
@@ -471,6 +537,68 @@ export default function ProjectSettingsPage() {
         </div>
       ),
     },
+    ...(isSuperAdmin ? [{
+      key: 'logs',
+      label: '日志管理',
+      children: (
+        <div style={{ maxWidth: 600 }}>
+          <div style={{ marginBottom: 24 }}>
+            <Space size="large" align="center">
+              <Space>
+                <HistoryOutlined />
+                <Text strong>翻译修改日志</Text>
+              </Space>
+              <Switch
+                checked={logEnabled}
+                onChange={handleToggleLog}
+                checkedChildren="已开启"
+                unCheckedChildren="已关闭"
+              />
+            </Space>
+            <div style={{ marginTop: 8 }}>
+              <Text type="secondary">开启后，每次翻译内容的修改将自动记录历史</Text>
+            </div>
+          </div>
+
+          <div style={{ padding: 16, background: '#fafafa', borderRadius: 8, marginBottom: 24 }}>
+            <Space style={{ marginBottom: 12 }}>
+              <Text>当前日志记录数：</Text>
+              <Tag color="blue">{logCount} 条</Tag>
+            </Space>
+            <div>
+              <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>按时间范围清理：</Text>
+              <Space wrap>
+                <Button
+                  icon={<ClearOutlined />}
+                  loading={logLoading}
+                  disabled={!logEnabled || logCount === 0}
+                  onClick={() => handleCleanLogs(30)}
+                >
+                  清理 30 天前
+                </Button>
+                <Button
+                  icon={<ClearOutlined />}
+                  loading={logLoading}
+                  disabled={!logEnabled || logCount === 0}
+                  onClick={() => handleCleanLogs(90)}
+                >
+                  清理 90 天前
+                </Button>
+                <Button
+                  danger
+                  icon={<DeleteOutlined />}
+                  loading={logLoading}
+                  disabled={logCount === 0}
+                  onClick={handleCleanAllLogs}
+                >
+                  清理全部
+                </Button>
+              </Space>
+            </div>
+          </div>
+        </div>
+      ),
+    }] : []),
   ]
 
   return (

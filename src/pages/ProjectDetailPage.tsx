@@ -652,7 +652,9 @@ export default function ProjectDetailPage() {
       fixed: 'right' as const,
       render: (_: unknown, record: TranslationRow) => (
         <Space size={4}>
-          <Button type="text" icon={<HistoryOutlined />} size="small" title="修改历史" onClick={() => openHistoryAllLocales(record.keyId, record.key || '')} />
+          {isSuperAdmin && (
+            <Button type="text" icon={<HistoryOutlined />} size="small" title="修改历史" onClick={() => openHistoryAllLocales(record.keyId, record.key || '')} />
+          )}
           {(perms.canEditKey && perms.canEditValue) && (
             <Button type="text" icon={<EditOutlined />} size="small" onClick={() => openRowEdit(record)} />
           )}
@@ -824,12 +826,14 @@ export default function ProjectDetailPage() {
         open={editValueOpen}
         onCancel={() => { setEditValueOpen(false); setEditingCell(null) }}
         footer={[
-          <Button key="history" icon={<HistoryOutlined />} onClick={() => editingCell && openHistory(editingCell.keyId, editingCell.localeId, editingCell.localeName, editingCell.rowKey)}>
-            修改历史
-          </Button>,
+          isSuperAdmin ? (
+            <Button key="history" icon={<HistoryOutlined />} onClick={() => editingCell && openHistory(editingCell.keyId, editingCell.localeId, editingCell.localeName, editingCell.rowKey)}>
+              修改历史
+            </Button>
+          ) : null,
           <Button key="cancel" onClick={() => { setEditValueOpen(false); setEditingCell(null) }}>取消</Button>,
           <Button key="ok" type="primary" onClick={handleSaveValue}>保存</Button>,
-        ]}
+        ].filter(Boolean)}
         width={600}
       >
         {editingCell && (
