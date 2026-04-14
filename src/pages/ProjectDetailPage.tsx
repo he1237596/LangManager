@@ -91,7 +91,7 @@ export default function ProjectDetailPage() {
       .select('role')
       .eq('project_id', projectId)
       .eq('user_id', user.id)
-      .single()
+      .maybeSingle()
     if (data) setMyRole(data.role as ProjectRole)
   }, [user, projectId, isSuperAdmin])
 
