@@ -7,7 +7,7 @@ import {
 } from 'antd'
 import {
   PlusOutlined, DeleteOutlined, ExportOutlined, SettingOutlined, EditOutlined,
-  SearchOutlined, DownloadOutlined, ExclamationCircleOutlined, HistoryOutlined,
+  SearchOutlined, DownloadOutlined, ExclamationCircleOutlined, HistoryOutlined, UserOutlined,
 } from '@ant-design/icons'
 import JSZip from 'jszip'
 import { supabase } from '@/api/supabase'
@@ -913,9 +913,11 @@ export default function ProjectDetailPage() {
             {historyData.map((h, i) => (
               <div key={h.id || i} style={{ padding: '8px 0', borderBottom: i < historyData.length - 1 ? '1px solid #f0f0f0' : 'none' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    {h.updater_email || '未知'} · {dayjs(h.created_at).format('YYYY-MM-DD HH:mm:ss')}
-                  </Text>
+                  <Space size={4}>
+                    <UserOutlined style={{ fontSize: 12, color: '#1677ff' }} />
+                    <Text style={{ fontSize: 12, color: '#1677ff' }}>{h.updater_email || '未知'}</Text>
+                  </Space>
+                  <Text type="secondary" style={{ fontSize: 12 }}>{dayjs(h.created_at).format('YYYY-MM-DD HH:mm:ss')}</Text>
                 </div>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
                   <Text delete style={{ color: '#ff4d4f', fontSize: 12, maxWidth: 280, wordBreak: 'break-all' }}>
@@ -949,13 +951,15 @@ export default function ProjectDetailPage() {
             {historyAllData.map((h, i) => (
               <div key={h.id || i} style={{ padding: '8px 0', borderBottom: i < historyAllData.length - 1 ? '1px solid #f0f0f0' : 'none' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                  <Space>
+                  <Space size={4}>
                     <Tag style={{ fontSize: 11 }}>{h.locale_name}</Tag>
                     <Text code style={{ fontSize: 11 }}>{h.locale_code}</Text>
                   </Space>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    {h.updater_email || '未知'} · {dayjs(h.created_at).format('YYYY-MM-DD HH:mm:ss')}
-                  </Text>
+                  <Space size={4}>
+                    <UserOutlined style={{ fontSize: 12, color: '#1677ff' }} />
+                    <Text style={{ fontSize: 12, color: '#1677ff' }}>{h.updater_email || '未知'}</Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>{dayjs(h.created_at).format('MM-DD HH:mm')}</Text>
+                  </Space>
                 </div>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
                   <Text delete style={{ color: '#ff4d4f', fontSize: 12, maxWidth: 300, wordBreak: 'break-all' }}>
