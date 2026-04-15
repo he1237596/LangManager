@@ -172,6 +172,20 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: 'Method not allowed' }, 405)
   }
 
+  // 手动验证用户身份
+  const authHeader = req.headers.get('Authorization')
+  if (!authHeader) {
+    return jsonResponse({ error: '未提供认证令牌' }, 401)
+  }
+  const token = authHeader.replace('Bearer ', '')
+  const supabaseClient = createClient(supabaseUrl, supabaseServiceKey, {
+    global: { headers: { Authorization: `Bearer ${token}` } },
+  })
+  const { data: { user }, error: authError } = await supabaseClient.auth.getUser(token)
+  if (authError || !user) {
+    return jsonResponse({ error: '认证失败，请重新登录' }, 401)
+  }
+
   try {
     const body = await req.json()
     const { texts, source_lang, target_lang } = body

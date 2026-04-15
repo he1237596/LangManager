@@ -294,22 +294,15 @@ export default function ProjectDetailPage() {
   }
 
   // --- AI Translation ---
-  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
   const [aiTranslating, setAiTranslating] = useState(false)
   const [batchTranslateTarget, setBatchTranslateTarget] = useState<string | null>(null)
 
   const callTranslateApi = async (texts: string[], sourceLang: string, targetLang: string): Promise<string[]> => {
-    const res = await fetch(`${supabaseUrl}/functions/v1/translate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ texts, source_lang: sourceLang, target_lang: targetLang }),
+    const { data, error } = await supabase.functions.invoke('translate', {
+      body: { texts, source_lang: sourceLang, target_lang: targetLang },
     })
-    if (!res.ok) {
-      const err = await res.json()
-      throw new Error(err.error || '翻译请求失败')
-    }
-    const data = await res.json()
-    return data.translations
+    if (error) throw new Error(error.message)
+    return (data as { translations: string[] }).translations
   }
 
   // 编辑弹窗内单条 AI 翻译
