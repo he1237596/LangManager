@@ -1,11 +1,11 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
   Typography, Table, Card, Tag, Select, Button, Modal, Form, Input, Checkbox,
-  message, Space, Divider, Statistic, Row, Col, Popconfirm, Collapse,
+  message, Space, Divider, Statistic, Row, Col, Popconfirm, Collapse, Alert,
 } from 'antd'
 import {
   PlusOutlined, DeleteOutlined, EditOutlined, SafetyOutlined, UserOutlined,
-  KeyOutlined, UserAddOutlined,
+  KeyOutlined, UserAddOutlined, GlobalOutlined,
 } from '@ant-design/icons'
 import { supabase } from '@/api/supabase'
 import { useAuth } from '@/contexts/AuthContext'
@@ -116,6 +116,68 @@ export default function SystemSettingsPage() {
       keys: keysRes.count || 0,
     })
   }, [])
+
+  // --- Translation Service Config (Tencent TMT) ---
+  const [tencentSecretId, setTencentSecretId] = useState('')
+  const [tencentSecretKey, setTencentSecretKey] = useState('')
+  const [tencentConfigLoading, setTencentConfigLoading] = useState(true)
+  const [tencentSaving, setTencentSaving] = useState(false)
+
+  const fetchTencentConfig = useCallback(async () => {
+    if (!isSuperAdmin) return
+    setTencentConfigLoading(true)
+    const [idRes, keyRes] = await Promise.all([
+      supabase.from('system_configs').select('value').eq('key', 'tencent_secret_id').maybeSingle(),
+      supabase.from('system_configs').select('value').eq('key', 'tencent_secret_key').maybeSingle(),
+    ])
+    setTencentSecretId(idRes.data?.value || '')
+    setTencentSecretKey(keyRes.data?.value || '')
+    setTencentConfigLoading(false)
+  }, [isSuperAdmin])
+
+  const handleSaveTencentConfig = async () => {
+    if (!tencentSecretId && !tencentSecretKey) {
+      message.warning('请至少填写一项配置')
+      return
+    }
+    setTencentSaving(true)
+    try {
+      if (tencentSecretId) {
+        const { error } = await supabase
+          .from('system_configs')
+          .upsert({ key: 'tencent_secret_id', value: tencentSecretId, updated_at: new Date().toISOString() }, { onConflict: 'key' })
+        if (error) { message.error('保存 SecretId 失败: ' + error.message); setTencentSaving(false); return }
+      } else {
+        await supabase.from('system_configs').delete().eq('key', 'tencent_secret_id')
+      }
+      if (tencentSecretKey) {
+        const { error } = await supabase
+          .from('system_configs')
+          .upsert({ key: 'tencent_secret_key', value: tencentSecretKey, updated_at: new Date().toISOString() }, { onConflict: 'key' })
+        if (error) { message.error('保存 SecretKey 失败: ' + error.message); setTencentSaving(false); return }
+      } else {
+        await supabase.from('system_configs').delete().eq('key', 'tencent_secret_key')
+      }
+      message.success('腾讯云翻译配置已保存')
+    } catch { message.error('保存失败') }
+    setTencentSaving(false)
+  }
+
+  const handleClearTencentConfig = async () => {
+    setTencentSaving(true)
+    await Promise.all([
+      supabase.from('system_configs').delete().eq('key', 'tencent_secret_id'),
+      supabase.from('system_configs').delete().eq('key', 'tencent_secret_key'),
+    ])
+    setTencentSecretId('')
+    setTencentSecretKey('')
+    message.success('腾讯云翻译配置已清除')
+    setTencentSaving(false)
+  }
+
+  useEffect(() => {
+    fetchTencentConfig()
+  }, [fetchTencentConfig])
 
   useEffect(() => {
     Promise.all([fetchUsers(), fetchRoles(), fetchStats()]).then(() => setLoading(false))
@@ -495,6 +557,57 @@ export default function SystemSettingsPage() {
           </Card>
         </Col>
       </Row>
+
+      {/* 翻译服务配置 */}
+      {isSuperAdmin && (
+        <>
+          <Divider>翻译服务</Divider>
+          <Card style={{ marginBottom: 24 }}>
+            <Space style={{ marginBottom: 12 }}><GlobalOutlined /><Text strong>腾讯云机器翻译 (TMT)</Text></Space>
+            <Alert
+              message="配置腾讯云 SecretId 和 SecretKey 后，可在翻译管理页面使用 AI 自动翻译功能。每月免费 500 万字符，无需绑卡。"
+              type="info"
+              showIcon
+              style={{ marginBottom: 12 }}
+            />
+            {tencentConfigLoading ? (
+              <div style={{ textAlign: 'center', padding: 16 }}>加载中...</div>
+            ) : (
+              <>
+                <div style={{ marginBottom: 12 }}>
+                  <Text type="secondary" style={{ fontSize: 12, marginBottom: 4, display: 'block' }}>SecretId</Text>
+                  <Input.Password
+                    placeholder="输入腾讯云 SecretId"
+                    value={tencentSecretId}
+                    onChange={e => setTencentSecretId(e.target.value)}
+                    style={{ maxWidth: 600 }}
+                  />
+                </div>
+                <div style={{ marginBottom: 12 }}>
+                  <Text type="secondary" style={{ fontSize: 12, marginBottom: 4, display: 'block' }}>SecretKey</Text>
+                  <Input.Password
+                    placeholder="输入腾讯云 SecretKey"
+                    value={tencentSecretKey}
+                    onChange={e => setTencentSecretKey(e.target.value)}
+                    style={{ maxWidth: 600 }}
+                  />
+                </div>
+                <Space>
+                  <Button type="primary" onClick={handleSaveTencentConfig} loading={tencentSaving}>保存</Button>
+                  {(tencentSecretId || tencentSecretKey) && (
+                    <Button danger onClick={handleClearTencentConfig} loading={tencentSaving}>清除配置</Button>
+                  )}
+                </Space>
+                <div style={{ marginTop: 8 }}>
+                  <a href="https://console.cloud.tencent.com/cam/capi" target="_blank" rel="noopener noreferrer">
+                    前往腾讯云控制台获取 SecretId/SecretKey（需开通机器翻译服务）
+                  </a>
+                </div>
+              </>
+            )}
+          </Card>
+        </>
+      )}
 
       {/* 角色管理 */}
       {canManageRoles && (

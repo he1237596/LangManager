@@ -8,6 +8,7 @@ import {
 import {
   PlusOutlined, DeleteOutlined, ExportOutlined, SettingOutlined, EditOutlined,
   SearchOutlined, DownloadOutlined, ExclamationCircleOutlined, HistoryOutlined, UserOutlined,
+  RobotOutlined,
 } from '@ant-design/icons'
 import JSZip from 'jszip'
 import { supabase } from '@/api/supabase'
@@ -290,6 +291,110 @@ export default function ProjectDetailPage() {
     setEditValueOpen(false)
     setEditingCell(null)
     doFetch()
+  }
+
+  // --- AI Translation ---
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+  const [aiTranslating, setAiTranslating] = useState(false)
+  const [batchTranslateTarget, setBatchTranslateTarget] = useState<string | null>(null)
+
+  const callTranslateApi = async (texts: string[], sourceLang: string, targetLang: string): Promise<string[]> => {
+    const res = await fetch(`${supabaseUrl}/functions/v1/translate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ texts, source_lang: sourceLang, target_lang: targetLang }),
+    })
+    if (!res.ok) {
+      const err = await res.json()
+      throw new Error(err.error || '翻译请求失败')
+    }
+    const data = await res.json()
+    return data.translations
+  }
+
+  // 编辑弹窗内单条 AI 翻译
+  const handleAiTranslateCell = async () => {
+    if (!editingCell || !user) return
+    const defaultLocale = locales.find(l => l.is_default)
+    if (!defaultLocale) { message.warning('未设置默认语言'); return }
+    const targetLocale = locales.find(l => l.id === editingCell.localeId)
+    if (!targetLocale) { message.warning('未找到目标语言'); return }
+    const sourceTrans = rows.find(r => r.keyId === editingCell.keyId)?.translations[defaultLocale.id]
+    if (!sourceTrans?.value) { message.warning('默认语言没有翻译内容，无法翻译'); return }
+    if (editingCell.localeId === defaultLocale.id) { message.warning('当前已是默认语言'); return }
+
+    setAiTranslating(true)
+    try {
+      const [result] = await callTranslateApi([sourceTrans.value], defaultLocale.code, targetLocale.code)
+      setEditValue(result)
+      message.success('AI 翻译完成')
+    } catch (err: unknown) {
+      message.error((err as Error).message || '翻译失败')
+    }
+    setAiTranslating(false)
+  }
+
+  // 批量翻译：翻译某语言下所有空值
+  const handleBatchTranslate = async (targetLocaleId: string) => {
+    if (!user || !projectId) return
+    const targetLocale = locales.find(l => l.id === targetLocaleId)
+    const defaultLocale = locales.find(l => l.is_default)
+    if (!targetLocale || !defaultLocale) return
+    if (targetLocaleId === defaultLocale.id) { message.warning('不能翻译默认语言'); return }
+
+    // 找出目标语言为空但默认语言有值的行
+    const toTranslate: { keyId: string; sourceText: string }[] = []
+    const sourceLocaleCode = defaultLocale.code
+    const targetLocaleCode = targetLocale.code
+
+    for (const row of rows) {
+      const sourceVal = row.translations[defaultLocale.id]?.value || ''
+      const targetVal = row.translations[targetLocaleId]?.value || ''
+      if (sourceVal && !targetVal) {
+        toTranslate.push({ keyId: row.keyId, sourceText: sourceVal })
+      }
+    }
+
+    if (toTranslate.length === 0) {
+      message.info('没有需要翻译的内容（目标语言已全部填写或默认语言为空）')
+      setBatchTranslateTarget(null)
+      return
+    }
+
+    setAiTranslating(true)
+    try {
+      // 逐条翻译（腾讯 TMT 不支持批量，每次一条）
+      const BATCH_SIZE = 10
+      let translated = 0
+      for (let i = 0; i < toTranslate.length; i += BATCH_SIZE) {
+        const batch = toTranslate.slice(i, i + BATCH_SIZE)
+        const results = await callTranslateApi(
+          batch.map(b => b.sourceText),
+          sourceLocaleCode,
+          targetLocaleCode,
+        )
+
+        // 逐条保存翻译
+        for (let j = 0; j < batch.length; j++) {
+          const { keyId } = batch[j]
+          const value = results[j]
+          const existing = rows.find(r => r.keyId === keyId)?.translations[targetLocaleId]
+          if (existing) {
+            await supabase.from('translations').update({ value, updated_by: user.id, updated_at: new Date().toISOString() }).eq('id', existing.id)
+          } else {
+            await supabase.from('translations').insert({ key_id: keyId, locale_id: targetLocaleId, value, updated_by: user.id })
+          }
+        }
+        translated += batch.length
+      }
+
+      message.success(`已翻译 ${translated} 条内容到 ${targetLocale.name}`)
+      doFetch()
+    } catch (err: unknown) {
+      message.error((err as Error).message || '批量翻译失败')
+    }
+    setAiTranslating(false)
+    setBatchTranslateTarget(null)
   }
 
   const openHistory = async (keyId: string, localeId: string, localeName: string, rowKey: string) => {
@@ -716,6 +821,23 @@ export default function ProjectDetailPage() {
               添加
             </Button>
           )}
+          {locales.length > 1 && perms.canEditValue && (
+            <Dropdown
+              menu={{
+                items: locales
+                  .filter(l => !l.is_default)
+                  .map(l => ({
+                    key: l.id,
+                    label: `${l.name} (${l.code})`,
+                    onClick: () => setBatchTranslateTarget(l.id),
+                  })),
+              }}
+            >
+              <Button icon={<RobotOutlined />} loading={aiTranslating}>
+                AI 翻译
+              </Button>
+            </Dropdown>
+          )}
           <Button icon={<DownloadOutlined />} onClick={handleExportAll} loading={exporting}>
             导出全部
           </Button>
@@ -848,6 +970,17 @@ export default function ProjectDetailPage() {
           onChange={e => setEditValue(e.target.value)}
           placeholder="输入翻译文本..."
         />
+        {editingCell && !editingCell.localeName.includes('默认') && (
+          <Button
+            type="dashed"
+            icon={<RobotOutlined />}
+            loading={aiTranslating}
+            onClick={handleAiTranslateCell}
+            style={{ marginTop: 8, width: '100%' }}
+          >
+            AI 自动翻译（从默认语言）
+          </Button>
+        )}
       </Modal>
 
       {/* Row Edit Modal */}
@@ -998,6 +1131,41 @@ export default function ProjectDetailPage() {
             />
           </div>
         </div>
+      </Modal>
+
+      {/* Batch AI Translate Confirmation */}
+      <Modal
+        title={<span><RobotOutlined /> AI 批量翻译确认</span>}
+        open={!!batchTranslateTarget}
+        onCancel={() => setBatchTranslateTarget(null)}
+        onOk={() => batchTranslateTarget && handleBatchTranslate(batchTranslateTarget)}
+        okText="开始翻译"
+        cancelText="取消"
+        okButtonProps={{ loading: aiTranslating }}
+      >
+        {batchTranslateTarget && (
+          <div style={{ marginTop: 16 }}>
+            {(() => {
+              const target = locales.find(l => l.id === batchTranslateTarget)
+              const defaultLocale = locales.find(l => l.is_default)
+              const count = rows.filter(row => {
+                const srcVal = row.translations[defaultLocale?.id || '']?.value || ''
+                const tgtVal = row.translations[batchTranslateTarget]?.value || ''
+                return srcVal && !tgtVal
+              }).length
+              return (
+                <Text>
+                  将把 <Tag color="blue">{defaultLocale?.name}</Tag> 的翻译内容
+                  通过 AI 翻译到 <Tag color="green">{target?.name}</Tag>，
+                  共 <Text strong>{count}</Text> 条待翻译内容。
+                </Text>
+              )
+            })()}
+            <div style={{ marginTop: 8 }}>
+              <Text type="secondary" style={{ fontSize: 12 }}>已有翻译内容的行不会被覆盖。</Text>
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   )
