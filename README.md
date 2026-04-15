@@ -7,12 +7,14 @@
 - **用户认证**：邮箱注册/登录，邮箱找回密码
 - **角色体系**：系统角色（超级管理员/系统管理员/运营人员/普通用户）+ 项目角色（管理员/开发者/编辑/查看者）
 - **项目管理**：创建多个项目，独立管理各项目的翻译
+- **AI 翻译**：集成腾讯云机器翻译 (TMT)，支持单条翻译和批量翻译空值，每月免费 500 万字符
 - **翻译编辑**：在线编辑翻译内容，支持多语言对照视图，按语言导出 JSON / 按项目打包 ZIP
 - **修改历史**：翻译修改自动记录历史（可按项目开关），支持按 Key 查看所有语言的变更记录；仅超级管理员可查看和清理
+- **审计日志**：超级管理员可查看系统审计日志
 - **日志管理**：超级管理员可在项目设置中开启/关闭翻译日志，按时间范围（30天/90天）或全部清理历史记录
 - **成员管理**：邀请成员加入项目，灵活分配项目角色
 - **语言管理**：拖拽排序配置项目语言，支持 15+ 种预设语言快速添加
-- **系统设置**：超级管理员可管理系统用户（添加/删除/重置密码）、分配系统角色
+- **系统设置**：超级管理员可管理系统用户（添加/删除/重置密码）、分配系统角色、配置翻译服务（腾讯云 SecretId/SecretKey）
 - **数据与隐私**：用户个人中心，支持查看统计数据、导出/注销个人数据
 - **会话安全**：空闲 2 天自动登出，过期前 30 分钟提醒；支持 Refresh Token 自动轮转
 
@@ -24,6 +26,7 @@
 | UI 组件库 | Ant Design 5 |
 | 构建工具 | Vite 6 |
 | 后端/数据库 | Supabase (PostgreSQL + Auth + RLS) |
+| Edge Functions | Supabase Edge Functions (Deno) - 腾讯云 TMT 翻译网关 |
 | 拖拽排序 | @dnd-kit |
 | 部署 | Cloudflare Pages |
 
@@ -34,6 +37,12 @@
 1. 前往 [supabase.com](https://supabase.com) 创建项目
 2. 在 **SQL Editor** 中执行 `supabase/init.sql` 脚本初始化数据库
 3. 在 **Authentication > Providers > Email** 中启用 Email 提供商
+4. 部署 Edge Function：`supabase/functions/translate/` 目录下为腾讯云 TMT 翻译网关
+
+```bash
+# 使用 Supabase CLI 部署翻译函数
+npx supabase functions deploy translate --no-verify-jwt --project-ref <your-project-ref>
+```
 
 > `init.sql` 会自动创建默认管理员账号：`admin@example.com` / `admin123`，请在生产环境中修改密码。
 
@@ -124,15 +133,19 @@ src/
 │   ├── ForgotPasswordPage.tsx  # 忘记密码
 │   ├── ResetPasswordPage.tsx   # 重置密码
 │   ├── ProjectListPage.tsx     # 项目列表
-│   ├── ProjectDetailPage.tsx   # 翻译编辑（核心页面）
+│   ├── ProjectDetailPage.tsx   # 翻译编辑（核心页面，含 AI 翻译）
 │   ├── ProjectSettingsPage.tsx # 项目设置（语言/成员管理）
-│   └── SystemSettingsPage.tsx  # 系统设置（用户/角色管理）
+│   ├── SystemSettingsPage.tsx  # 系统设置（用户/角色/翻译服务配置）
+│   └── AuditLogPage.tsx        # 审计日志（超级管理员）
 ├── types/
 │   └── index.ts            # 类型定义
 ├── App.tsx                 # 路由配置
 └── main.tsx                # 入口
 supabase/
-└── init.sql                # 数据库初始化脚本（表/函数/RLS/默认数据）
+├── init.sql                # 数据库初始化脚本（表/函数/RLS/默认数据）
+└── functions/
+    └── translate/
+        └── index.ts        # 腾讯云 TMT 翻译 Edge Function
 ```
 
 ## 注意事项
@@ -143,3 +156,5 @@ supabase/
 - `init.sql` 包含 RLS（Row Level Security）策略，确保数据隔离安全
 - 修改历史基于数据库触发器自动记录，需确保 `translation_history` 表和触发器已创建（见 `init.sql`）
 - 修改历史和日志管理功能仅对超级管理员开放，各项目可独立控制是否开启日志记录
+- AI 翻译依赖腾讯云 TMT 服务，需在系统设置中配置 SecretId 和 SecretKey，并确保已开通机器翻译服务
+- 翻译接口部署在 Supabase Edge Functions 上，密钥存储在数据库 `system_configs` 表中
