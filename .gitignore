@@ -8,3 +8,4 @@ test-locales
 login.yaml
 docs
 ARTICLE.md
+tsconfig.tsbuildinfo
