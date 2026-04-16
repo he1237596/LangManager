@@ -185,6 +185,11 @@ Deno.serve(async (req) => {
   if (authError || !user) {
     return jsonResponse({ error: '认证失败，请重新登录' }, 401)
   }
+  // 检查用户是否被禁用
+  const { data: profile } = await supabase.from('profiles').select('disabled_at').eq('id', user.id).single()
+  if (profile?.disabled_at) {
+    return jsonResponse({ error: '账号已被禁用，请联系管理员' }, 403)
+  }
 
   try {
     const body = await req.json()

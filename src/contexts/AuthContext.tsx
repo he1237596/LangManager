@@ -128,6 +128,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         .eq('id', userId)
         .single()
       if (data) {
+        // 检查是否被禁用（覆盖：重新打开窗口 / 刷新页面 / token 自动续期）
+        if (data.disabled_at) {
+          supabase.auth.signOut()
+          return null
+        }
         setProfile(data)
         setSystemRole(data.system_role || null)
       } else {
@@ -149,10 +154,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  // 定时检查用户是否被禁用（每 30 秒）
+  // Realtime + 轮询兜底：监听 profile 变更（被禁用时即时踢出）
+  const kickedRef = useRef(false)
+  const doKick = useCallback((reason?: string | null) => {
+    if (kickedRef.current) return
+    kickedRef.current = true
+    Modal.warning({
+      title: '账号已被禁用',
+      content: reason ? `原因：${reason}` : '您的账号已被管理员禁用，如有疑问请联系管理员。',
+      okText: '重新登录',
+      onOk: () => { window.location.href = '/login' },
+    })
+    supabase.auth.signOut()
+  }, [])
+
   useEffect(() => {
-    if (!user) return
+    if (!user) { kickedRef.current = false; return }
+    kickedRef.current = false
+    // Realtime 实时推送（主）
+    const channel = supabase
+      .channel('profile-disable-check')
+      .on('postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'profiles', filter: `id=eq.${user.id}` },
+        (payload) => {
+          const newDisabled = payload.new as { disabled_at?: string | null; disabled_reason?: string | null } | null
+          if (newDisabled?.disabled_at) {
+            supabase.removeChannel(channel)
+            doKick(newDisabled.disabled_reason)
+          }
+        }
+      )
+      .subscribe()
+    // 轮询兜底（WebSocket 断连时保底，60 秒一次）
     const timer = setInterval(async () => {
+      if (kickedRef.current) return
       const { data } = await supabase
         .from('profiles')
         .select('disabled_at, disabled_reason')
@@ -160,17 +195,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         .single()
       if (data?.disabled_at) {
         clearInterval(timer)
-        Modal.warning({
-          title: '账号已被禁用',
-          content: data.disabled_reason ? `原因：${data.disabled_reason}` : '您的账号已被管理员禁用，如有疑问请联系管理员。',
-          okText: '重新登录',
-          onOk: () => { window.location.href = '/login' },
-        })
-        await supabase.auth.signOut()
+        supabase.removeChannel(channel)
+        doKick(data.disabled_reason)
       }
-    }, 30_000)
-    return () => clearInterval(timer)
-  }, [user])
+    }, 60_000)
+    return () => { clearInterval(timer); supabase.removeChannel(channel) }
+  }, [user, doKick])
 
   // 初始化：从 SDK 获取 session
   useEffect(() => {
