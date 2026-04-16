@@ -5,7 +5,7 @@ import {
 } from 'antd'
 import {
   PlusOutlined, DeleteOutlined, EditOutlined, SafetyOutlined, UserOutlined,
-  KeyOutlined, UserAddOutlined, GlobalOutlined,
+  KeyOutlined, UserAddOutlined, GlobalOutlined, StopOutlined,
 } from '@ant-design/icons'
 import { supabase } from '@/api/supabase'
 import { useAuth } from '@/contexts/AuthContext'
@@ -73,10 +73,11 @@ function setPermValue(permissions: RolePermissions, path: string, value: boolean
 
 export default function SystemSettingsPage() {
   const { user, isSuperAdmin, hasPermission } = useAuth()
-  const [users, setUsers] = useState<Profile[]>([])
+  const [users, setUsers] = useState<(Profile & { disabled_at?: string | null; disabled_reason?: string | null })[]>([])
   const [roles, setRoles] = useState<SystemRole[]>([])
   const [loading, setLoading] = useState(true)
   const [stats, setStats] = useState({ users: 0, projects: 0, keys: 0 })
+  const [togglingUserId, setTogglingUserId] = useState<string | null>(null)
 
   const canManageUsers = isSuperAdmin || hasPermission('manage_users')
   const canManageRoles = isSuperAdmin || hasPermission('manage_roles')
@@ -106,7 +107,7 @@ export default function SystemSettingsPage() {
 
   const fetchStats = useCallback(async () => {
     const [usersRes, projectsRes, keysRes] = await Promise.all([
-      supabase.from('profiles').select('id', { count: 'exact', head: true }),
+      supabase.from('profiles').select('id', { count: 'exact', head: true }).is('disabled_at', null),
       supabase.from('projects').select('id', { count: 'exact', head: true }),
       supabase.from('translation_keys').select('id', { count: 'exact', head: true }),
     ])
@@ -281,6 +282,33 @@ export default function SystemSettingsPage() {
     fetchUsers()
   }
 
+  // --- Toggle User Disable/Enable ---
+  const [disableModalUser, setDisableModalUser] = useState<(typeof users extends (infer T)[] ? T : never) | null>(null)
+  const [disableReason, setDisableReason] = useState('')
+
+  const handleToggleUser = async (targetUser: typeof users extends (infer T)[] ? T : never, disable: boolean, reason?: string) => {
+    if (!isSuperAdmin || targetUser.id === user?.id) return
+    setTogglingUserId(targetUser.id)
+    const { error } = await supabase.rpc('toggle_user_status', {
+      p_user_id: targetUser.id,
+      p_disable: disable,
+      p_reason: reason || null,
+    })
+    setTogglingUserId(null)
+    setDisableModalUser(null)
+    setDisableReason('')
+    if (error) { message.error(disable ? '禁用失败: ' : '启用失败: ' + error.message); return }
+    message.success(disable ? `已禁用用户 ${targetUser.display_name || targetUser.email}` : `已启用用户 ${targetUser.display_name || targetUser.email}`)
+    supabase.rpc('log_action', {
+      p_action: disable ? 'user_disable' : 'user_enable',
+      p_target_type: 'user',
+      p_target_id: targetUser.id,
+      p_detail: { email: targetUser.email, display_name: targetUser.display_name, reason },
+    })
+    fetchUsers()
+    fetchStats()
+  }
+
   // --- Role CRUD ---
   const openCreateRole = () => {
     setEditingRole(null)
@@ -362,11 +390,14 @@ export default function SystemSettingsPage() {
     {
       title: '用户',
       key: 'user',
-      render: (_: unknown, record: Profile) => (
+      render: (_: unknown, record: typeof users extends (infer T)[] ? T : never) => (
         <Space>
           <UserOutlined />
-          <Text strong>{record.display_name || '未设置'}</Text>
+          <Text strong style={{ textDecoration: record.disabled_at ? 'line-through' : 'none', opacity: record.disabled_at ? 0.5 : 1 }}>
+            {record.display_name || '未设置'}
+          </Text>
           {record.id === user?.id && <Tag color="blue">你</Tag>}
+          {record.disabled_at && <Tag color="red">已禁用</Tag>}
         </Space>
       ),
     },
@@ -374,7 +405,9 @@ export default function SystemSettingsPage() {
       title: '邮箱',
       dataIndex: 'email',
       key: 'email',
-      render: (v: string) => v || '-',
+      render: (v: string, record: typeof users extends (infer T)[] ? T : never) => (
+        <Text type={record.disabled_at ? 'secondary' : undefined} style={{ opacity: record.disabled_at ? 0.5 : 1 }}>{v || '-'}</Text>
+      ),
     },
     {
       title: '系统角色',
@@ -400,16 +433,40 @@ export default function SystemSettingsPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 100,
-      render: (_: unknown, record: Profile) => (
+      width: 140,
+      render: (_: unknown, record: typeof users extends (infer T)[] ? T : never) => (
         <Space size={4}>
-          {isSuperAdmin && record.id !== user?.id && (
+          {isSuperAdmin && record.id !== user?.id && !record.disabled_at && (
             <Button
               type="text"
               icon={<KeyOutlined />}
               size="small"
               onClick={() => { setResetPwdUser(record); setNewPassword('') }}
             />
+          )}
+          {isSuperAdmin && record.id !== user?.id && (
+            record.disabled_at ? (
+              <Popconfirm
+                title="确认启用此用户？"
+                description="启用后用户可正常登录"
+                onConfirm={() => handleToggleUser(record, false)}
+                okText="启用"
+                cancelText="取消"
+              >
+                <Button type="link" size="small" loading={togglingUserId === record.id} style={{ color: '#52c41a' }}>
+                  启用
+                </Button>
+              </Popconfirm>
+            ) : (
+              <Button
+                type="text"
+                danger
+                size="small"
+                icon={<StopOutlined />}
+                loading={togglingUserId === record.id}
+                onClick={() => { setDisableModalUser(record); setDisableReason('') }}
+              />
+            )
           )}
         </Space>
       ),
@@ -733,6 +790,38 @@ export default function SystemSettingsPage() {
             />
             <Text type="warning" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
               此操作将立即生效，请务必通知用户新密码。
+            </Text>
+          </div>
+        )}
+      </Modal>
+
+      {/* 禁用用户弹窗 */}
+      <Modal
+        title={<span><StopOutlined /> 禁用用户</span>}
+        open={!!disableModalUser}
+        onCancel={() => { setDisableModalUser(null); setDisableReason('') }}
+        onOk={() => disableModalUser && handleToggleUser(disableModalUser, true, disableReason)}
+        okText="确认禁用"
+        cancelText="取消"
+        okButtonProps={{ danger: true, loading: togglingUserId === disableModalUser?.id }}
+      >
+        {disableModalUser && (
+          <div style={{ marginTop: 16 }}>
+            <Text>
+              确认禁用用户 <Text strong>{disableModalUser.display_name || '未设置'}</Text>
+              {disableModalUser.email && <Text type="secondary"> ({disableModalUser.email})</Text>}？
+            </Text>
+            <div style={{ marginTop: 12 }}>
+              <Text type="secondary" style={{ fontSize: 12, marginBottom: 4, display: 'block' }}>禁用原因（可选）</Text>
+              <Input.TextArea
+                rows={3}
+                value={disableReason}
+                onChange={e => setDisableReason(e.target.value)}
+                placeholder="请输入禁用原因..."
+              />
+            </div>
+            <Text type="warning" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
+              禁用后用户将无法登录系统，但数据不会被删除。
             </Text>
           </div>
         )}

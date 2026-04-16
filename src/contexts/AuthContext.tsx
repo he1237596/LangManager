@@ -149,6 +149,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
+  // 定时检查用户是否被禁用（每 30 秒）
+  useEffect(() => {
+    if (!user) return
+    const timer = setInterval(async () => {
+      const { data } = await supabase
+        .from('profiles')
+        .select('disabled_at, disabled_reason')
+        .eq('id', user.id)
+        .single()
+      if (data?.disabled_at) {
+        clearInterval(timer)
+        Modal.warning({
+          title: '账号已被禁用',
+          content: data.disabled_reason ? `原因：${data.disabled_reason}` : '您的账号已被管理员禁用，如有疑问请联系管理员。',
+          okText: '重新登录',
+          onOk: () => { window.location.href = '/login' },
+        })
+        await supabase.auth.signOut()
+      }
+    }, 30_000)
+    return () => clearInterval(timer)
+  }, [user])
+
   // 初始化：从 SDK 获取 session
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session: currentSession } }) => {
@@ -193,8 +216,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signIn = async (email: string, password: string) => {
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password })
+      const { data: authData, error } = await supabase.auth.signInWithPassword({ email, password })
       if (error) return { error: error.message }
+      // 登录成功后检查是否被禁用
+      if (authData.user) {
+        const { data: profileData } = await supabase
+          .from('profiles')
+          .select('disabled_at, disabled_reason')
+          .eq('id', authData.user.id)
+          .single()
+        if (profileData?.disabled_at) {
+          await supabase.auth.signOut()
+          return { error: profileData.disabled_reason ? `账号已被禁用：${profileData.disabled_reason}` : '账号已被禁用，请联系管理员' }
+        }
+      }
       return { error: null }
     } catch (err) {
       console.error('[Auth] signIn exception:', err)
