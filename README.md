@@ -14,9 +14,11 @@
 - **日志管理**：超级管理员可在项目设置中开启/关闭翻译日志，按时间范围（30天/90天）或全部清理历史记录
 - **成员管理**：邀请成员加入项目，灵活分配项目角色
 - **语言管理**：拖拽排序配置项目语言，支持 15+ 种预设语言快速添加
-- **系统设置**：超级管理员可管理系统用户（添加/删除/重置密码）、分配系统角色、配置翻译服务（腾讯云 SecretId/SecretKey）
+- **系统设置**：超级管理员可管理系统用户（添加/删除/禁用/启用/重置密码）、分配系统角色、配置翻译服务（腾讯云 SecretId/SecretKey）
+- **用户禁用**：管理员可软禁用用户，禁用后立即踢出在线用户、阻止登录、RLS 层面阻断所有数据访问
 - **数据与隐私**：用户个人中心，支持查看统计数据、导出/注销个人数据
 - **会话安全**：空闲 2 天自动登出，过期前 30 分钟提醒；支持 Refresh Token 自动轮转
+- **数据库保活**：内置 keepalive 接口，支持外部定时请求防止数据库休眠
 
 ## 技术栈
 
@@ -42,6 +44,9 @@
 ```bash
 # 使用 Supabase CLI 部署翻译函数
 npx supabase functions deploy translate --no-verify-jwt --project-ref <your-project-ref>
+
+# 部署数据库保活函数
+npx supabase functions deploy keepalive --no-verify-jwt --project-ref <your-project-ref>
 ```
 
 > `init.sql` 会自动创建默认管理员账号：`admin@example.com` / `admin123`，请在生产环境中修改密码。
@@ -144,8 +149,10 @@ src/
 supabase/
 ├── init.sql                # 数据库初始化脚本（表/函数/RLS/默认数据）
 └── functions/
-    └── translate/
-        └── index.ts        # 腾讯云 TMT 翻译 Edge Function
+    ├── translate/
+    │   └── index.ts        # 腾讯云 TMT 翻译 Edge Function
+    └── keepalive/
+        └── index.ts        # 数据库保活 Edge Function
 ```
 
 ## 注意事项
@@ -158,3 +165,4 @@ supabase/
 - 修改历史和日志管理功能仅对超级管理员开放，各项目可独立控制是否开启日志记录
 - AI 翻译依赖腾讯云 TMT 服务，需在系统设置中配置 SecretId 和 SecretKey，并确保已开通机器翻译服务
 - 翻译接口部署在 Supabase Edge Functions 上，密钥存储在数据库 `system_configs` 表中
+- Supabase 免费版数据库会在 7 天无活动后暂停，可使用 keepalive 接口配合 UptimeRobot 等工具定时保活
