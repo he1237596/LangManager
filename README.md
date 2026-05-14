@@ -2,6 +2,53 @@
 
 基于 **React + TypeScript + Ant Design + Supabase** 的多语言翻译管理系统，支持多项目管理、在线翻译编辑、批量导出。
 
+## 开源协议
+
+本项目基于 [MIT License](LICENSE) 开源，可自由使用、修改和分发。
+
+## 系统架构
+
+```mermaid
+graph TB
+    subgraph Client["🧑 用户端"]
+        Browser["浏览器"]
+        External["外部系统<br/>GitLab CI / UptimeRobot"]
+    end
+
+    subgraph CDN["🌐 CDN"]
+        CF["Cloudflare Pages<br/>前端静态资源"]
+    end
+
+    subgraph Edge["⚡ Edge Functions"]
+        Translate["翻译网关<br/>/translate"]
+        KeepAlive["数据库保活<br/>/keepalive"]
+        ExportCSV["CSV 导出<br/>/export-csv"]
+    end
+
+    subgraph Supabase["🗄️ Supabase"]
+        Auth["Supabase Auth<br/>用户认证 / JWT"]
+        DB[("PostgreSQL<br/>数据存储 + RLS")]
+        RT["Realtime<br/>实时推送"]
+        API["REST API<br/>自动生成"]
+    end
+
+    subgraph ExternalAPI["🔗 外部服务"]
+        TMT["腾讯云 TMT<br/>机器翻译"]
+    end
+
+    Browser -->|"HTTPS"| CF
+    Browser -->|"REST API / JWT"| API
+    Browser -->|"Realtime WS"| RT
+    Browser -->|"AI 翻译"| Translate
+    External -->|"定时保活"| KeepAlive
+    External -->|"GET 下载 CSV"| ExportCSV
+    API -->|"SQL"| DB
+    Auth -->|"用户/Session"| DB
+    Translate -->|"查询密钥"| DB
+    Translate -->|"翻译请求"| TMT
+    RT -->|"INSERT/UPDATE"| DB
+```
+
 ## 功能特性
 
 - **用户认证**：邮箱注册/登录，邮箱找回密码
