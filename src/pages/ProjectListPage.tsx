@@ -16,7 +16,7 @@ const { Text, Title } = Typography
 const { TextArea } = Input
 
 export default function ProjectListPage() {
-  const { user, isSuperAdmin, hasPermission } = useAuth()
+  const { user, isSuperAdmin, hasPermission, loading: authLoading } = useAuth()
   const navigate = useNavigate()
   const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(true)
@@ -74,8 +74,9 @@ export default function ProjectListPage() {
   }
 
   useEffect(() => {
+    if (authLoading) return // 等 profile/systemRole 加载完再查项目
     fetchProjects()
-  }, [user, isSuperAdmin])
+  }, [user, isSuperAdmin, authLoading])
 
   const handleCreate = async (values: { name: string; description?: string }) => {
     const { data: project, error } = await supabase
