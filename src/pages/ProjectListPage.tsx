@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Button, Card, List, Typography, Modal, Form, Input, Space, Empty, Tag, message, Popconfirm,
@@ -24,7 +24,8 @@ export default function ProjectListPage() {
   const [editingProject, setEditingProject] = useState<Project | null>(null)
   const [form] = Form.useForm()
 
-  const fetchProjects = async () => {
+  const fetchProjects = useCallback(async () => {
+    if (!user) return
     setLoading(true)
 
     if (isSuperAdmin) {
@@ -51,7 +52,7 @@ export default function ProjectListPage() {
       const { data } = await supabase
         .from('project_member_roles')
         .select('project_id, role')
-        .eq('user_id', user!.id)
+        .eq('user_id', user.id)
 
       if (data && data.length > 0) {
         const projectIds = data.map((d) => d.project_id)
@@ -71,12 +72,12 @@ export default function ProjectListPage() {
       }
     }
     setLoading(false)
-  }
+  }, [user, isSuperAdmin])
 
   useEffect(() => {
-    if (authLoading) return // 等 profile/systemRole 加载完再查项目
+    if (authLoading || !user) return
     fetchProjects()
-  }, [user, isSuperAdmin, authLoading])
+  }, [user, isSuperAdmin, authLoading, fetchProjects])
 
   const handleCreate = async (values: { name: string; description?: string }) => {
     const { data: project, error } = await supabase

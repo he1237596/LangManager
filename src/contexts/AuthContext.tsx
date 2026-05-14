@@ -204,11 +204,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // 初始化：从 SDK 获取 session
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session: currentSession } }) => {
+    supabase.auth.getSession().then(async ({ data: { session: currentSession } }) => {
       setSession(currentSession)
       setUser(currentSession?.user ?? null)
       if (currentSession?.user) {
-        fetchProfile(currentSession.user.id)
+        await fetchProfile(currentSession.user.id)
       }
       setLoading(false)
     })
