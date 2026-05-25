@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /project/
+Disallow: /settings
+Disallow: /audit-logs
+
+Sitemap: https://lang-manager.vercel.app/sitemap.xml
