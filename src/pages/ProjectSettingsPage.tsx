@@ -263,6 +263,12 @@ export default function ProjectSettingsPage() {
 
     if (error) { message.error('添加失败: ' + error.message); return }
     message.success('成员添加成功')
+    await supabase.rpc('log_action', {
+      p_action: 'member_add',
+      p_target_type: 'member',
+      p_target_id: values.userId,
+      p_detail: { project_id: projectId, email: memberEmail, role: values.role },
+    })
     setAddMemberOpen(false)
     memberForm.resetFields()
     fetchMembers()
@@ -275,6 +281,13 @@ export default function ProjectSettingsPage() {
       .eq('id', memberId)
     if (error) { message.error('更新失败'); return }
     message.success('角色已更新')
+    const changedMember = members.find(m => m.id === memberId)
+    await supabase.rpc('log_action', {
+      p_action: 'member_role_change',
+      p_target_type: 'member',
+      p_target_id: changedMember?.user_id || '',
+      p_detail: { project_id: projectId, email: changedMember?.profile?.email, new_role: newRole },
+    })
     fetchMembers()
   }
 
@@ -286,6 +299,13 @@ export default function ProjectSettingsPage() {
     const { error } = await supabase.from('project_members').delete().eq('id', memberId)
     if (error) { message.error('移除失败'); return }
     message.success('成员已移除')
+    const removedMember = members.find(m => m.id === memberId)
+    await supabase.rpc('log_action', {
+      p_action: 'member_remove',
+      p_target_type: 'member',
+      p_target_id: userId,
+      p_detail: { project_id: projectId, email: removedMember?.profile?.email },
+    })
     fetchMembers()
   }
 

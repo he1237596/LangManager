@@ -104,6 +104,12 @@ export default function ProjectListPage() {
       })
 
     message.success('项目创建成功')
+    await supabase.rpc('log_action', {
+      p_action: 'project_create',
+      p_target_type: 'project',
+      p_target_id: project.id,
+      p_detail: { name: values.name },
+    })
     setModalOpen(false)
     form.resetFields()
     fetchProjects()
@@ -138,6 +144,11 @@ export default function ProjectListPage() {
       return
     }
     message.success('项目已删除')
+    await supabase.rpc('log_action', {
+      p_action: 'project_delete',
+      p_target_type: 'project',
+      p_target_id: id,
+    })
     fetchProjects()
   }
 

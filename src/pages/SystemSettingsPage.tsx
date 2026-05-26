@@ -206,6 +206,12 @@ export default function SystemSettingsPage() {
       return
     }
     message.success(`已重置 ${resetPwdUser.display_name || resetPwdUser.email} 的密码`)
+    await supabase.rpc('log_action', {
+      p_action: 'user_password_reset',
+      p_target_type: 'user',
+      p_target_id: resetPwdUser.id,
+      p_detail: { email: resetPwdUser.email, display_name: resetPwdUser.display_name },
+    })
     setResetPwdUser(null)
     setNewPassword('')
   }
@@ -234,6 +240,12 @@ export default function SystemSettingsPage() {
       return
     }
     message.success(`用户 ${values.display_name || values.email} 创建成功`)
+    await supabase.rpc('log_action', {
+      p_action: 'user_create',
+      p_target_type: 'user',
+      p_target_id: data?.user_id,
+      p_detail: { email: values.email, display_name: values.display_name, role: values.role_name },
+    })
     setAddUserModalOpen(false)
     addUserForm.resetFields()
     fetchUsers()
@@ -339,6 +351,12 @@ export default function SystemSettingsPage() {
         .eq('id', editingRole.id)
       if (error) { message.error('更新失败: ' + error.message); return }
       message.success('角色已更新')
+      await supabase.rpc('log_action', {
+        p_action: 'role_update',
+        p_target_type: 'role',
+        p_target_id: editingRole.id,
+        p_detail: { name: values.name, display_name: values.display_name },
+      })
     } else {
       // Create
       const { error } = await supabase
