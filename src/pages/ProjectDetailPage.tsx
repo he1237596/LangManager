@@ -25,7 +25,7 @@ const ROLE_PERMISSIONS: Record<ProjectRole, { canAddKey: boolean; canEditKey: bo
   viewer: { canAddKey: false, canEditKey: false, canEditValue: false, canDeleteKey: false, canManageLocale: false },
 }
 
-type SortField = 'key' | 'created_at' | 'updated_at'
+type SortField = 'key' | 'created_at' | 'updated_at' | 'id'
 
 export default function ProjectDetailPage() {
   const { projectId } = useParams<{ projectId: string }>()
