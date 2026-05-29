@@ -124,7 +124,7 @@ export default function ProjectDetailPage() {
       .eq('project_id', projectId)
 
     if (emptyOnly) {
-      query = query.is('key', null)
+      query = query.or('key.is.null,key.eq.')
     } else if (key) {
       query = query.or(`key.ilike.%${key}%,description.ilike.%${key}%`)
     }
