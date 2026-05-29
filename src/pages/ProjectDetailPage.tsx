@@ -48,7 +48,7 @@ export default function ProjectDetailPage() {
   const [searchTranslation, setSearchTranslation] = useState('')
   const [showEmptyKeyOnly, setShowEmptyKeyOnly] = useState(false)
   const [sortField, setSortField] = useState<SortField>('created_at')
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
   const debounceTimer = useRef<ReturnType<typeof setTimeout>>()
 
   // Add key modal
