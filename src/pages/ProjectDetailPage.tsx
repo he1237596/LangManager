@@ -47,7 +47,7 @@ export default function ProjectDetailPage() {
   const [searchKey, setSearchKey] = useState('')
   const [searchTranslation, setSearchTranslation] = useState('')
   const [showEmptyKeyOnly, setShowEmptyKeyOnly] = useState(false)
-  const [sortField, setSortField] = useState<SortField>('key')
+  const [sortField, setSortField] = useState<SortField>('created_at')
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
   const debounceTimer = useRef<ReturnType<typeof setTimeout>>()
 
@@ -130,6 +130,10 @@ export default function ProjectDetailPage() {
     }
 
     query = query.order(sField, { ascending: sOrder === 'asc', nullsFirst: false })
+    // 二级排序保证确定性，避免 key 重复或 NULL 时分页结果重复
+    if (sField !== 'id') {
+      query = query.order('id', { ascending: sOrder === 'asc' })
+    }
 
     const from = (page - 1) * size
     const to = from + size - 1
