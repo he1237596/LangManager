@@ -123,6 +123,40 @@ export default function ProjectDetailPage() {
       .select('*', { count: 'exact' })
       .eq('project_id', projectId)
 
+    // 翻译内容搜索（必须在分页前，先在 DB 层找到包含搜索词的所有 key_id）
+    if (trans) {
+      const { data: projectKeys } = await supabase
+        .from('translation_keys')
+        .select('id')
+        .eq('project_id', projectId)
+
+      const projectKeyIds = (projectKeys || []).map(k => k.id)
+
+      if (projectKeyIds.length === 0) {
+        setTotalCount(0)
+        setRows([])
+        setLoading(false)
+        return
+      }
+
+      const { data: matchingTrans } = await supabase
+        .from('translations')
+        .select('key_id')
+        .in('key_id', projectKeyIds)
+        .ilike('value', `%${trans}%`)
+
+      const matchingKeyIds = [...new Set((matchingTrans || []).map(t => t.key_id))]
+
+      if (matchingKeyIds.length === 0) {
+        setTotalCount(0)
+        setRows([])
+        setLoading(false)
+        return
+      }
+
+      query = query.in('id', matchingKeyIds)
+    }
+
     if (emptyOnly) {
       query = query.or('key.is.null,key.eq.')
     } else if (key) {
