@@ -200,14 +200,7 @@ export default function ProjectDetailPage() {
       translations: transMap[k.id] || {},
     }))
 
-    let filtered = result
-    if (trans) {
-      filtered = result.filter(r =>
-        Object.values(r.translations).some(t => t.value && t.value.toLowerCase().includes(trans.toLowerCase()))
-      )
-    }
-
-    setRows(filtered)
+    setRows(result)
     setLoading(false)
   }, [projectId])
 

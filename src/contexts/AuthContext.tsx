@@ -188,11 +188,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // 轮询兜底（WebSocket 断连时保底，60 秒一次）
     const timer = setInterval(async () => {
       if (kickedRef.current) return
-      const { data } = await supabase
+      console.log('[Poll] 开始轮询 profile...', 'session.expires_at:', session?.expires_at, 'now:', Math.round(Date.now() / 1000))
+      const { data, error } = await supabase
         .from('profiles')
         .select('disabled_at, disabled_reason')
         .eq('id', user.id)
         .single()
+      console.log('[Poll] 结果 data:', data, 'error:', error?.message || 'none')
       if (data?.disabled_at) {
         clearInterval(timer)
         supabase.removeChannel(channel)
@@ -205,6 +207,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // 初始化：从 SDK 获取 session
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data: { session: currentSession } }) => {
+      console.log('[Auth] getSession:', currentSession ? {
+        expires_at: currentSession.expires_at,
+        expires_in_seconds: currentSession.expires_at ? currentSession.expires_at - Math.round(Date.now() / 1000) : 'N/A',
+        refresh_token: currentSession.refresh_token ? 'present' : 'null'
+      } : 'null')
       setSession(currentSession)
       setUser(currentSession?.user ?? null)
       if (currentSession?.user) {
@@ -214,7 +221,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event, newSession) => {
+      (event, newSession) => {
+        console.log('[Auth] onAuthStateChange:', event, 'session:', newSession ? 'present' : 'null', 'expires_at:', newSession?.expires_at)
         setSession(newSession)
         setUser(newSession?.user ?? null)
         if (newSession?.user) {
