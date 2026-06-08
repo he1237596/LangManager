@@ -6,33 +6,14 @@ import { useAuth } from '@/contexts/AuthContext'
 
 const { Title, Text } = Typography
 
-/** 清除本地残留的 supabase session，避免旧 token 干扰新登录 */
-function cleanStaleSession() {
-  const storageKey = 'sb-xonrngcdkvcvslnlwhis-auth-token'
-  try {
-    const raw = localStorage.getItem(storageKey)
-    if (raw) {
-      const session = JSON.parse(raw)
-      if (session?.expires_at) {
-        const remaining = session.expires_at - Math.round(Date.now() / 1000)
-        console.log('[LoginPage] 发现旧 session，剩余', remaining, '秒')
-        if (remaining < 60 || !session.access_token) {
-          console.log('[LoginPage] session 即将过期或无效，清除')
-          localStorage.removeItem(storageKey)
-        }
-      }
-    }
-  } catch { /* ignore */ }
-}
-
 export default function LoginPage() {
-  const { signIn } = useAuth()
+  const { signIn, signOut } = useAuth()
   const navigate = useNavigate()
   const [loading, setLoading] = useState(false)
 
-  // 进入登录页时自动清理 60 秒内过期的旧 session
+  // 进入登录页无条件清除旧 session，避免旧 token 干扰新登录
   useEffect(() => {
-    cleanStaleSession()
+    signOut()
   }, [])
 
   const onFinish = async (values: { email: string; password: string }) => {
