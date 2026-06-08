@@ -210,10 +210,11 @@ Deno.serve(async (req) => {
     const source = source_lang ? toTencentLang(source_lang) : 'auto'
     const target = toTencentLang(target_lang)
 
-    // 腾讯 TMT 不支持批量，逐条翻译
+    // 腾讯 TMT 不支持批量，逐条翻译（限频 5次/秒，加 250ms 延迟保安全）
     const translations: string[] = []
-    for (const text of texts) {
-      const result = await callTencentTranslate(config.secretId, config.secretKey, text, source, target)
+    for (let i = 0; i < texts.length; i++) {
+      if (i > 0) await new Promise(r => setTimeout(r, 250))
+      const result = await callTencentTranslate(config.secretId, config.secretKey, texts[i], source, target)
       translations.push(result)
     }
 
