@@ -1,0 +1,29 @@
+# 排除 node_modules（含 pnpm 符号链接，Windows 下 Docker 无法 checksum）
+node_modules
+.pnp
+.pnpm-store
+
+# 排除 git 与无关后端目录（前端构建不需要）
+.git
+supabase
+scripts
+public
+
+# 排除 docker 运行时产物与密钥（但保留 docker/nginx、docker/web 供前端 Dockerfile 使用）
+docker/volumes
+docker/.env
+docker/.env.example
+
+# 排除本地 env / 产物
+.env
+.env.local
+dist
+
+# 排除编辑器/系统文件
+.vscode
+.idea
+*.log
+
+# 注意：以下前端构建必需文件必须保留（不要排除）：
+#   package.json  package-lock.json  vite.config.ts  tsconfig.json  index.html  src/
+#   docker/nginx/nginx.conf  docker/web/Dockerfile（供 web 服务构建使用）

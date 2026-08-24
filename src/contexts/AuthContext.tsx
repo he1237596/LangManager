@@ -172,6 +172,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!user) { kickedRef.current = false; return }
     kickedRef.current = false
     // Realtime 实时推送（主）
+    let pollingTimer: ReturnType<typeof setInterval> | null = null
     const channel = supabase
       .channel('profile-disable-check')
       .on('postgres_changes',
@@ -180,28 +181,62 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           const newDisabled = payload.new as { disabled_at?: string | null; disabled_reason?: string | null } | null
           if (newDisabled?.disabled_at) {
             supabase.removeChannel(channel)
+            if (pollingTimer) clearInterval(pollingTimer)
             doKick(newDisabled.disabled_reason)
           }
         }
       )
       .subscribe()
-    // 轮询兜底（WebSocket 断连时保底，60 秒一次）
-    const timer = setInterval(async () => {
+
+    // 监听 Realtime 连接状态：仅在断连时启用轮询兜底，连接恢复后停止
+    const handleVisibility = () => {
+      if (document.hidden) return
       if (kickedRef.current) return
-      console.log('[Poll] 开始轮询 profile...', 'session.expires_at:', session?.expires_at, 'now:', Math.round(Date.now() / 1000))
-      const { data, error } = await supabase
+      // 页面可见时检查一次（长时间后台切回前台可能 Realtime 已断连）
+      supabase
         .from('profiles')
         .select('disabled_at, disabled_reason')
         .eq('id', user.id)
         .single()
-      console.log('[Poll] 结果 data:', data, 'error:', error?.message || 'none')
-      if (data?.disabled_at) {
-        clearInterval(timer)
-        supabase.removeChannel(channel)
-        doKick(data.disabled_reason)
+        .then(({ data }) => {
+          if (data?.disabled_at) {
+            supabase.removeChannel(channel)
+            doKick(data.disabled_reason)
+          }
+        })
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+
+    // 兜底轮询：仅当 Realtime 断开且页面可见时，每 5 分钟检查一次
+    pollingTimer = setInterval(() => {
+      if (kickedRef.current) {
+        if (pollingTimer) clearInterval(pollingTimer)
+        return
       }
-    }, 60_000)
-    return () => { clearInterval(timer); supabase.removeChannel(channel) }
+      const state = (channel as { state?: string }).state
+      // 只有当 channel 不是 connected 状态时才轮询
+      if (state !== 'joined') {
+        console.log('[Poll] Realtime 断开，轮询兜底...')
+        supabase
+          .from('profiles')
+          .select('disabled_at, disabled_reason')
+          .eq('id', user.id)
+          .single()
+          .then(({ data }) => {
+            if (data?.disabled_at) {
+              if (pollingTimer) clearInterval(pollingTimer)
+              supabase.removeChannel(channel)
+              doKick(data.disabled_reason)
+            }
+          })
+      }
+    }, 5 * 60_000)
+
+    return () => {
+      if (pollingTimer) clearInterval(pollingTimer)
+      supabase.removeChannel(channel)
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
   }, [user, doKick])
 
   // 初始化：从 SDK 获取 session
@@ -225,9 +260,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         console.log('[Auth] onAuthStateChange:', event, 'session:', newSession ? 'present' : 'null', 'expires_at:', newSession?.expires_at)
         setSession(newSession)
         setUser(newSession?.user ?? null)
-        if (newSession?.user) {
-          fetchProfile(newSession.user.id)
-        } else {
+        // TOKEN_REFRESHED / USER_UPDATED 不查 profile，避免每次续期都消耗 API 额度
+        if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
+          if (newSession?.user) fetchProfile(newSession.user.id)
+          else { setProfile(null); setSystemRole(null) }
+        } else if (event === 'SIGNED_OUT') {
           setProfile(null)
           setSystemRole(null)
         }

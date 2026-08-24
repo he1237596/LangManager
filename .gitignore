@@ -1,5 +1,6 @@
 .env
 .env.local
+docker/.env
 node_modules
 dist
 *.local

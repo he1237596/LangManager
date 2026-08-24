@@ -317,6 +317,7 @@ export default function ProjectSettingsPage() {
   const [publicToken, setPublicToken] = useState<string | null>(null)
   const [tokenVisible, setTokenVisible] = useState(false)
   const [tokenLoading, setTokenLoading] = useState(false)
+  const [cacheRefreshing, setCacheRefreshing] = useState(false)
 
   const fetchLogCount = useCallback(async () => {
     if (!projectId) return
@@ -432,39 +433,59 @@ export default function ProjectSettingsPage() {
     })
   }
 
+  const handleRefreshCache = async () => {
+    if (!publicToken) return
+    setCacheRefreshing(true)
+    try {
+      // 走 RPC 实时查询最新翻译（自托管无需 CDN 缓存刷新）
+      const res = await fetch(
+        `${supabaseUrl}/rest/v1/rpc/get_all_translations_by_token?token=${publicToken}`,
+        { headers: { 'apikey': anonKey, 'Authorization': `Bearer ${anonKey}` } }
+      )
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      const localeCount = Object.keys(data).length
+      const keyCount = Object.values(data).reduce(
+        (sum: number, msgs: unknown) => sum + Object.keys(msgs as Record<string, string>).length, 0
+      )
+      message.success(`已获取最新翻译：${localeCount} 种语言，${keyCount} 条翻译`)
+    } catch (err: unknown) {
+      message.error(`刷新失败: ${(err as Error).message}`)
+    }
+    setCacheRefreshing(false)
+  }
+
   const copyText = (text: string) => {
     navigator.clipboard.writeText(text)
     message.success('已复制到剪贴板')
   }
 
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
-  const apiUrl = `${supabaseUrl}/functions/v1/i18n`
+  const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+  // 自托管优先用 REST RPC（无需 Edge Function），云端也可用：/functions/v1/i18n
+  const rpcUrl = `${supabaseUrl}/rest/v1/rpc/get_all_translations_by_token`
 
   const getSdkCode = () => {
     return `// lang-manager.ts - 放入你的前端项目
-const API_URL = '${apiUrl}'
+const SUPABASE_URL = '${supabaseUrl}'
+const ANON_KEY = '${anonKey}'
 const TOKEN = '${publicToken}'
 
-// 推荐：一次请求获取所有语言（响应缓存 60 秒）
-async function fetchAllTranslations() {
-  const res = await fetch(\`\${API_URL}/translations/all?token=\${TOKEN}\`)
-  if (!res.ok) throw new Error('Failed to fetch translations')
-  return res.json() as Promise<Record<string, Record<string, string>>>
-}
-
-// 按需：获取单个语言
-async function fetchTranslations(locale: string) {
-  const res = await fetch(\`\${API_URL}/translations?token=\${TOKEN}&locale=\${locale}\`)
+// 推荐：一次请求获取所有语言（走数据库 RPC，自托管/云端通用）
+async function fetchAllTranslations(): Promise<Record<string, Record<string, string>>> {
+  const res = await fetch(
+    \`\${SUPABASE_URL}/rest/v1/rpc/get_all_translations_by_token?token=\${TOKEN}\`,
+    { headers: { 'apikey': ANON_KEY, 'Authorization': \`Bearer \${ANON_KEY}\` } }
+  )
   if (!res.ok) throw new Error('Failed to fetch translations')
   return res.json()
 }
 
 // ---- 用法示例 ----
 
-// React + react-i18next（推荐 all 接口，一次加载所有语言）:
+// React + react-i18next（推荐，一次加载所有语言）:
 // import i18n from 'i18next'
-// const isDev = import.meta.env.DEV
-// const allTranslations = isDev ? await fetchAllTranslations() : null
+// const allTranslations = await fetchAllTranslations()
 // i18n.init({
 //   resources: Object.fromEntries(
 //     Object.entries(allTranslations || {}).map(([locale, msgs]) => [locale, { translation: msgs }])
@@ -473,8 +494,7 @@ async function fetchTranslations(locale: string) {
 
 // Vue 3 + vue-i18n:
 // import { createI18n } from 'vue-i18n'
-// const isDev = import.meta.env.DEV
-// const allTranslations = isDev ? await fetchAllTranslations() : {}
+// const allTranslations = await fetchAllTranslations()
 // const i18n = createI18n({ legacy: false, locale: 'zh-CN', messages: allTranslations })`
   }
 
@@ -778,32 +798,43 @@ async function fetchTranslations(locale: string) {
                 <Text style={{ display: 'block', marginBottom: 8, fontWeight: 500 }}>API 端点：</Text>
                 <div style={{ background: '#f5f5f5', borderRadius: 6, padding: '12px 16px' }}>
                   <div style={{ marginBottom: 8 }}>
-                    <Text type="secondary" style={{ fontSize: 12 }}>获取单个语言翻译</Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>获取所有语言翻译（批量，走 RPC）</Text>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <code style={{ fontSize: 12, wordBreak: 'break-all' }}>
-                        GET {apiUrl}/translations?token=...&amp;locale=zh-CN
+                        GET {supabaseUrl}/rest/v1/rpc/get_all_translations_by_token?token=...
                       </code>
-                      <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => copyText(`${apiUrl}/translations?token=${publicToken}&locale=zh-CN`)} />
-                    </div>
-                  </div>
-                  <div style={{ marginBottom: 8 }}>
-                    <Text type="secondary" style={{ fontSize: 12 }}>获取所有语言翻译（批量）</Text>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <code style={{ fontSize: 12, wordBreak: 'break-all' }}>
-                        GET {apiUrl}/translations/all?token=...
-                      </code>
-                      <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => copyText(`${apiUrl}/translations/all?token=${publicToken}`)} />
+                      <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => copyText(`${supabaseUrl}/rest/v1/rpc/get_all_translations_by_token?token=${publicToken}`)} />
                     </div>
                   </div>
                   <div>
-                    <Text type="secondary" style={{ fontSize: 12 }}>获取语言列表</Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>获取语言列表（走 REST）</Text>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <code style={{ fontSize: 12, wordBreak: 'break-all' }}>
-                        GET {apiUrl}/locales?token=...
+                        GET {supabaseUrl}/rest/v1/locales?token=...
                       </code>
-                      <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => copyText(`${apiUrl}/locales?token=${publicToken}`)} />
+                      <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => copyText(`${supabaseUrl}/rest/v1/locales?select=code,name&token=${publicToken}`)} />
                     </div>
                   </div>
+                </div>
+              </div>
+
+              <div style={{ marginBottom: 24, padding: 16, background: '#fffbe6', borderRadius: 8, border: '1px solid #ffe58f' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Space direction="vertical" size={0}>
+                    <Text strong><ReloadOutlined /> 获取最新翻译</Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      实时查询数据库最新翻译数据，修改后点击可立即拉取。
+                    </Text>
+                  </Space>
+                  <Button
+                    type="primary"
+                    ghost
+                    icon={<ReloadOutlined />}
+                    loading={cacheRefreshing}
+                    onClick={handleRefreshCache}
+                  >
+                    刷新缓存
+                  </Button>
                 </div>
               </div>
 
@@ -827,8 +858,9 @@ async function fetchTranslations(locale: string) {
                   fontSize: 12, lineHeight: 1.6, overflowX: 'auto',
                 }}>{`# 一键下载所有语言翻译为 JSON 文件
 node scripts/download-locales.mjs \\
-  --api-url ${apiUrl} \\
+  --api-url ${supabaseUrl}/rest/v1/rpc/get_all_translations_by_token \\
   --token ${publicToken} \\
+  --anon-key ${anonKey} \\
   --output ./src/locales`}
                 </pre>
               </div>

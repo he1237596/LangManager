@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import type { TablePaginationConfig } from 'antd/es/table'
 import type { SorterResult } from 'antd/lib/table/interface'
 import {
-  Typography, Button, Table, Input, Space, Modal, Form, Tag, message, Popconfirm, Tooltip, Dropdown, Divider,
+  Typography, Button, Table, Input, Space, Modal, Form, Tag, message, Popconfirm, Tooltip, Dropdown, Divider, Progress,
 } from 'antd'
 import {
   PlusOutlined, DeleteOutlined, ExportOutlined, SettingOutlined, EditOutlined,
@@ -327,8 +327,25 @@ export default function ProjectDetailPage() {
   // --- AI Translation ---
   const [aiTranslating, setAiTranslating] = useState(false)
   const [batchTranslateTarget, setBatchTranslateTarget] = useState<string | null>(null)
+  const [translateProgress, setTranslateProgress] = useState({ current: 0, total: 0 })
 
   const callTranslateApi = async (texts: string[], sourceLang: string, targetLang: string): Promise<string[]> => {
+    // 自托管：走可配置的 HTTP endpoint（docker/translate 容器）
+    const translateUrl = import.meta.env.VITE_TRANSLATE_URL
+    if (translateUrl) {
+      const res = await fetch(translateUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}` },
+        body: JSON.stringify({ texts, source_lang: sourceLang, target_lang: targetLang }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || `翻译服务返回 ${res.status}`)
+      }
+      const data = await res.json()
+      return (data as { translations: string[] }).translations
+    }
+    // 云端兼容：走 Supabase Edge Function
     const { data, error } = await supabase.functions.invoke('translate', {
       body: { texts, source_lang: sourceLang, target_lang: targetLang },
     })
@@ -386,6 +403,7 @@ export default function ProjectDetailPage() {
     }
 
     setAiTranslating(true)
+    setTranslateProgress({ current: 0, total: toTranslate.length })
     try {
       // 逐条翻译（腾讯 TMT 不支持批量，每次一条）
       const BATCH_SIZE = 10
@@ -410,6 +428,7 @@ export default function ProjectDetailPage() {
           }
         }
         translated += batch.length
+        setTranslateProgress({ current: translated, total: toTranslate.length })
       }
 
       message.success(`已翻译 ${translated} 条内容到 ${targetLocale.name}`)
@@ -419,6 +438,7 @@ export default function ProjectDetailPage() {
     }
     setAiTranslating(false)
     setBatchTranslateTarget(null)
+    setTranslateProgress({ current: 0, total: 0 })
   }
 
   const openHistory = async (keyId: string, localeId: string, localeName: string, rowKey: string) => {
@@ -1157,17 +1177,18 @@ export default function ProjectDetailPage() {
         </div>
       </Modal>
 
-      {/* Batch AI Translate Confirmation */}
+      {/* Batch AI Translate Confirmation / Progress */}
       <Modal
-        title={<span><RobotOutlined /> AI 批量翻译确认</span>}
+        title={<span><RobotOutlined /> {aiTranslating ? 'AI 批量翻译中...' : 'AI 批量翻译确认'}</span>}
         open={!!batchTranslateTarget}
-        onCancel={() => setBatchTranslateTarget(null)}
+        onCancel={() => { if (!aiTranslating) setBatchTranslateTarget(null) }}
+        footer={aiTranslating ? null : undefined}
         onOk={() => batchTranslateTarget && handleBatchTranslate(batchTranslateTarget)}
         okText="开始翻译"
         cancelText="取消"
         okButtonProps={{ loading: aiTranslating }}
       >
-        {batchTranslateTarget && (
+        {batchTranslateTarget && !aiTranslating && (
           <div style={{ marginTop: 16 }}>
             {(() => {
               const target = locales.find(l => l.id === batchTranslateTarget)
@@ -1187,6 +1208,21 @@ export default function ProjectDetailPage() {
             })()}
             <div style={{ marginTop: 8 }}>
               <Text type="secondary" style={{ fontSize: 12 }}>已有翻译内容的行不会被覆盖。</Text>
+            </div>
+          </div>
+        )}
+        {aiTranslating && translateProgress.total > 0 && (
+          <div style={{ padding: '24px 0', textAlign: 'center' }}>
+            <Progress
+              type="circle"
+              percent={Math.round((translateProgress.current / translateProgress.total) * 100)}
+              format={() => `${translateProgress.current}/${translateProgress.total}`}
+              size={160}
+            />
+            <div style={{ marginTop: 16 }}>
+              <Text type="secondary">
+                正在调用 AI 翻译（{translateProgress.current}/{translateProgress.total}）...
+              </Text>
             </div>
           </div>
         )}

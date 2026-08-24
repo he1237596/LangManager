@@ -8,8 +8,8 @@ if (!supabaseUrl || !supabaseAnonKey) {
 }
 
 function getStorageKey(): string {
-  const urlMatch = supabaseUrl?.match(/\/\/([^.]+)\./)
-  return urlMatch ? `sb-${urlMatch[1]}-auth-token` : 'sb-auth-token'
+  // 自托管/云端统一使用固定 key，避免依赖 *.supabase.co 域名格式
+  return 'sb-langmanager-auth-token'
 }
 
 export const supabase = createClient(

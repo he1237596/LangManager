@@ -1,0 +1,816 @@
+-- ============================================
+-- LangManager 多语言管理系统 - 数据库初始化脚本 v3
+-- 自托管 Supabase 版本（含 auth.instances 初始化）
+-- ============================================
+-- ⚠️ 此脚本会删除所有旧表并重新创建，已有数据将丢失！
+-- ⚠️ 建议在全新 Supabase 项目中执行
+-- ============================================
+
+-- 启用密码加密扩展（用于创建默认管理员）
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- ============================================================
+-- 0.5 初始化 auth.instances（自托管版关键修复）
+-- ------------------------------------------------------------
+-- 云端 Supabase 会自动 seed 一条 instance；自托管版
+-- auth.instances 常为空，导致脚本里 SELECT ... FROM auth.instances
+-- 回退成全零 UUID，多个账号可能共享同一 instance_id。
+-- 这里用确定性 UUID 幂等插入一条，确保 instance 稳定唯一。
+-- ============================================================
+DO $$
+DECLARE
+  v_count INTEGER;
+  v_instance_id UUID := '00000000-0000-0000-0000-000000000000'::UUID;
+BEGIN
+  SELECT COUNT(*) INTO v_count FROM auth.instances;
+  IF v_count = 0 THEN
+    INSERT INTO auth.instances (id, uuid, raw_base_config)
+    VALUES (
+      v_instance_id,
+      v_instance_id,
+      '{"site_url":"http://localhost:8000","jwt_secret":"","jwt_issuer":"supabase"}'::jsonb
+    );
+  END IF;
+END $$;
+
+-- ============================================
+-- 0. 清理所有旧数据
+-- ============================================
+-- 删除触发器（忽略不存在的表）
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+DO $$ BEGIN
+  DROP TRIGGER IF EXISTS profiles_updated_at ON public.profiles;
+EXCEPTION WHEN undefined_table THEN NULL;
+END $$;
+DO $$ BEGIN
+  DROP TRIGGER IF EXISTS roles_updated_at ON public.roles;
+EXCEPTION WHEN undefined_table THEN NULL;
+END $$;
+DO $$ BEGIN
+  DROP TRIGGER IF EXISTS projects_updated_at ON public.projects;
+EXCEPTION WHEN undefined_table THEN NULL;
+END $$;
+DO $$ BEGIN
+  DROP TRIGGER IF EXISTS tk_updated_at ON public.translation_keys;
+EXCEPTION WHEN undefined_table THEN NULL;
+END $$;
+DO $$ BEGIN
+  DROP TRIGGER IF EXISTS translations_updated_at ON public.translations;
+EXCEPTION WHEN undefined_table THEN NULL;
+END $$;
+
+-- 删除视图（忽略错误）
+DO $$ BEGIN
+  DROP VIEW IF EXISTS public.project_member_roles;
+EXCEPTION WHEN undefined_table THEN NULL;
+END $$;
+
+-- 删除函数
+DROP FUNCTION IF EXISTS public.handle_new_user();
+DROP FUNCTION IF EXISTS public.update_updated_at();
+DROP FUNCTION IF EXISTS public.is_first_user();
+DROP FUNCTION IF EXISTS public.is_project_member(UUID, UUID);
+DROP FUNCTION IF EXISTS public.is_project_admin(UUID, UUID);
+DROP FUNCTION IF EXISTS public.is_project_editor(UUID, UUID);
+DROP FUNCTION IF EXISTS public.is_project_translator(UUID, UUID);
+DROP FUNCTION IF EXISTS public.is_project_creator(UUID, UUID);
+DROP FUNCTION IF EXISTS public.is_super_admin(UUID);
+DROP FUNCTION IF EXISTS public.has_system_permission(UUID, TEXT);
+DROP FUNCTION IF EXISTS public.get_project_role(UUID, UUID);
+DROP FUNCTION IF EXISTS public.create_user(TEXT, TEXT, TEXT, TEXT);
+DROP FUNCTION IF EXISTS public.reset_user_password(UUID, TEXT);
+
+-- 删除表（按依赖关系倒序）
+DROP TABLE IF EXISTS public.translations CASCADE;
+DROP TABLE IF EXISTS public.translation_keys CASCADE;
+DROP TABLE IF EXISTS public.locales CASCADE;
+DROP TABLE IF EXISTS public.project_members CASCADE;
+DROP TABLE IF EXISTS public.projects CASCADE;
+DROP TABLE IF EXISTS public.profiles CASCADE;
+DROP TABLE IF EXISTS public.roles CASCADE;
+
+-- ============================================
+-- 1. 创建 roles 表（动态角色与权限）
+-- ============================================
+CREATE TABLE public.roles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL,
+  description TEXT,
+  permissions JSONB NOT NULL DEFAULT '{}'::jsonb,
+  is_system BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 权限结构说明:
+-- {
+--   "manage_users": boolean,      -- 管理系统用户
+--   "manage_roles": boolean,      -- 管理角色和权限
+--   "project": {
+--     "create": boolean,          -- 创建项目
+--     "delete_any": boolean       -- 删除任意项目
+--   },
+--   "member": {
+--     "invite": boolean,          -- 邀请成员
+--     "remove": boolean,          -- 移除成员
+--     "change_role": boolean      -- 修改成员角色
+--   }
+-- }
+
+-- 插入默认系统角色
+INSERT INTO public.roles (name, display_name, description, permissions, is_system) VALUES
+  ('super_admin', '超级管理员', '拥有系统所有权限', '{
+    "manage_users": true,
+    "manage_roles": true,
+    "project": {"create": true, "delete_any": true},
+    "member": {"invite": true, "remove": true, "change_role": true}
+  }'::jsonb, true),
+
+  ('sys_admin', '系统管理员', '全局管理权限，可管理用户和项目', '{
+    "manage_users": true,
+    "manage_roles": false,
+    "project": {"create": true, "delete_any": true},
+    "member": {"invite": true, "remove": true, "change_role": true}
+  }'::jsonb, true),
+
+  ('operator', '运营人员', '可管理项目成员，但不能管理系统用户和角色', '{
+    "manage_users": false,
+    "manage_roles": false,
+    "project": {"create": true, "delete_any": false},
+    "member": {"invite": true, "remove": true, "change_role": true}
+  }'::jsonb, true),
+
+  ('user', '普通用户', '基础权限，可创建项目并查看项目内容', '{
+    "manage_users": false,
+    "manage_roles": false,
+    "project": {"create": true, "delete_any": false},
+    "member": {"invite": false, "remove": false, "change_role": false}
+  }'::jsonb, true);
+
+-- ============================================
+-- 2. 创建 profiles 表
+-- ============================================
+CREATE TABLE public.profiles (
+  id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  display_name TEXT,
+  email TEXT,
+  role_id UUID NOT NULL REFERENCES public.roles(id),
+  avatar_url TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ============================================
+-- 3. 创建 projects 表
+-- ============================================
+CREATE TABLE public.projects (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  description TEXT,
+  created_by UUID NOT NULL REFERENCES public.profiles(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ============================================
+-- 4. 创建 project_members 表
+-- ============================================
+CREATE TABLE public.project_members (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES public.projects(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'viewer' CHECK (role IN ('admin', 'developer', 'editor', 'viewer')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(project_id, user_id)
+);
+
+-- ============================================
+-- 5. 创建 locales 表
+-- ============================================
+CREATE TABLE public.locales (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES public.projects(id) ON DELETE CASCADE,
+  code TEXT NOT NULL,
+  name TEXT NOT NULL,
+  is_default BOOLEAN NOT NULL DEFAULT false,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(project_id, code)
+);
+
+-- ============================================
+-- 6. 创建 translation_keys 表
+-- ============================================
+CREATE TABLE public.translation_keys (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES public.projects(id) ON DELETE CASCADE,
+  key TEXT NOT NULL,
+  description TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ============================================
+-- 7. 创建 translations 表
+-- ============================================
+CREATE TABLE public.translations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  key_id UUID NOT NULL REFERENCES public.translation_keys(id) ON DELETE CASCADE,
+  locale_id UUID NOT NULL REFERENCES public.locales(id) ON DELETE CASCADE,
+  value TEXT NOT NULL DEFAULT '',
+  updated_by UUID NOT NULL REFERENCES public.profiles(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(key_id, locale_id)
+);
+
+-- ============================================
+-- 8. 创建视图：项目成员角色
+-- ============================================
+CREATE OR REPLACE VIEW public.project_member_roles AS
+SELECT pm.project_id, pm.user_id, pm.role
+FROM public.project_members pm;
+
+-- ============================================
+-- 9. SECURITY DEFINER 辅助函数（解决 RLS 递归问题）
+-- ============================================
+
+-- 检查用户是否为超级管理员
+CREATE OR REPLACE FUNCTION public.is_super_admin(p_user_id UUID)
+RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER STABLE AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.profiles p
+    JOIN public.roles r ON r.id = p.role_id
+    WHERE p.id = p_user_id AND r.name = 'super_admin'
+  );
+$$;
+
+-- 检查用户是否拥有系统级权限
+CREATE OR REPLACE FUNCTION public.has_system_permission(p_user_id UUID, p_permission TEXT)
+RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER STABLE AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.profiles p
+    JOIN public.roles r ON r.id = p.role_id
+    WHERE p.id = p_user_id AND (r.permissions->>p_permission)::boolean = true
+  );
+$$;
+
+-- 检查用户是否为项目成员（包含 super_admin）
+CREATE OR REPLACE FUNCTION public.is_project_member(p_project_id UUID, p_user_id UUID)
+RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER STABLE AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.project_members
+    WHERE project_id = p_project_id AND user_id = p_user_id
+  ) OR public.is_super_admin(p_user_id);
+$$;
+
+-- 检查用户是否为项目管理员（admin + super_admin）
+CREATE OR REPLACE FUNCTION public.is_project_admin(p_project_id UUID, p_user_id UUID)
+RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER STABLE AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.project_members
+    WHERE project_id = p_project_id AND user_id = p_user_id AND role = 'admin'
+  ) OR public.is_super_admin(p_user_id);
+$$;
+
+-- 检查用户是否可编辑 key（admin/developer + super_admin）
+CREATE OR REPLACE FUNCTION public.is_project_editor(p_project_id UUID, p_user_id UUID)
+RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER STABLE AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.project_members
+    WHERE project_id = p_project_id AND user_id = p_user_id AND role IN ('admin', 'developer')
+  ) OR public.is_super_admin(p_user_id);
+$$;
+
+-- 检查用户是否可编辑翻译值（admin/editor + super_admin）
+CREATE OR REPLACE FUNCTION public.is_project_translator(p_project_id UUID, p_user_id UUID)
+RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER STABLE AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.project_members
+    WHERE project_id = p_project_id AND user_id = p_user_id AND role IN ('admin', 'editor')
+  ) OR public.is_super_admin(p_user_id);
+$$;
+
+-- 检查用户是否为项目创建者
+CREATE OR REPLACE FUNCTION public.is_project_creator(p_project_id UUID, p_user_id UUID)
+RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER STABLE AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.projects
+    WHERE id = p_project_id AND created_by = p_user_id
+  );
+$$;
+
+-- 获取用户的项目角色
+CREATE OR REPLACE FUNCTION public.get_project_role(p_project_id UUID, p_user_id UUID)
+RETURNS TEXT LANGUAGE sql SECURITY DEFINER STABLE AS $$
+  SELECT pm.role FROM public.project_members pm
+  WHERE pm.project_id = p_project_id AND pm.user_id = p_user_id
+  LIMIT 1;
+$$;
+
+-- ============================================
+-- 10. 新用户注册触发器（必须在插入管理员之前创建！）
+--     第一个用户自动成为 super_admin，后续为 user
+--     SECURITY DEFINER 绕过 RLS
+-- ============================================
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_role_id UUID;
+  v_has_super_admin BOOLEAN;
+BEGIN
+  -- 如果 profile 已存在，跳过（防止与 create_user RPC 冲突）
+  IF EXISTS (SELECT 1 FROM public.profiles WHERE id = NEW.id) THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT EXISTS (
+    SELECT 1 FROM public.profiles p
+    JOIN public.roles r ON r.id = p.role_id WHERE r.name = 'super_admin'
+  ) INTO v_has_super_admin;
+
+  IF NOT v_has_super_admin THEN
+    SELECT id INTO v_role_id FROM public.roles WHERE name = 'super_admin' LIMIT 1;
+  ELSE
+    SELECT id INTO v_role_id FROM public.roles WHERE name = 'user' LIMIT 1;
+  END IF;
+
+  INSERT INTO public.profiles (id, display_name, email, role_id)
+  VALUES (
+    NEW.id,
+    COALESCE(NEW.raw_user_meta_data->>'display_name', split_part(NEW.email, '@', 1)),
+    NEW.email,
+    COALESCE(v_role_id, (SELECT id FROM public.roles WHERE name = 'user' LIMIT 1))
+  );
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+-- ============================================
+-- 11. 超级管理员账号（已移除自动创建）
+-- ------------------------------------------------------------
+-- 注意：GoTrue v2.189 不支持 crypt()/bf 哈希的密码校验，
+-- 直接 INSERT auth.users 创建的账号永远无法登录（invalid_credentials）。
+-- 因此管理员账号不再由本脚本创建，请改用以下任一方式：
+--
+--   方式 A（推荐，首次部署）：调用 GoTrue Admin API 创建（密码由 GoTrue
+--     自行用 scrypt 哈希，格式一定正确），handle_new_user 触发器会自动
+--     生成 profile 并分配 super_admin 角色：
+--
+--     curl -X POST 'http://<PUBLIC_DOMAIN>/auth/v1/admin/users' \
+--       -H "apikey: $SERVICE_ROLE_KEY" \
+--       -H "Authorization: Bearer $SERVICE_ROLE_KEY" \
+--       -H "Content-Type: application/json" \
+--       -d '{"email":"admin@example.com","password":"admin123","email_confirm":true}'
+--
+--   方式 B：在前端用注册流程创建第一个用户，再手动将其 role 改为 super_admin。
+--
+--   ⚠️ 生产环境请务必修改默认密码！
+-- ============================================
+
+-- ============================================
+-- 12. 启用 RLS
+-- ============================================
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.roles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.projects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.project_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.locales ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.translation_keys ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.translations ENABLE ROW LEVEL SECURITY;
+
+-- --- 系统配置（腾讯云翻译密钥等全局配置） ---
+CREATE TABLE IF NOT EXISTS public.system_configs (
+  key        text PRIMARY KEY,
+  value      text,
+  updated_at timestamptz DEFAULT now()
+);
+COMMENT ON TABLE public.system_configs IS '系统级键值配置（如腾讯云翻译密钥）';
+ALTER TABLE public.system_configs ENABLE ROW LEVEL SECURITY;
+
+-- ============================================
+-- 13. RLS 策略
+-- ============================================
+
+-- --- roles ---
+CREATE POLICY "roles_select_all" ON public.roles
+  FOR SELECT USING (true);
+
+CREATE POLICY "roles_super_admin_manage" ON public.roles
+  FOR ALL USING (public.is_super_admin(auth.uid()))
+  WITH CHECK (public.is_super_admin(auth.uid()));
+
+-- --- profiles ---
+CREATE POLICY "profiles_select_all" ON public.profiles
+  FOR SELECT USING (true);
+
+CREATE POLICY "profiles_insert_self" ON public.profiles
+  FOR INSERT WITH CHECK (auth.uid() = id);
+
+CREATE POLICY "profiles_update_self" ON public.profiles
+  FOR UPDATE USING (auth.uid() = id)
+  WITH CHECK (auth.uid() = id);
+
+CREATE POLICY "profiles_admin_role" ON public.profiles
+  FOR UPDATE USING (
+    public.has_system_permission(auth.uid(), 'manage_users') AND auth.uid() != id
+  )
+  WITH CHECK (
+    public.has_system_permission(auth.uid(), 'manage_users') AND auth.uid() != id
+  );
+
+-- --- projects ---
+CREATE POLICY "projects_select_member" ON public.projects
+  FOR SELECT USING (
+    public.is_project_member(projects.id, auth.uid())
+    OR created_by = auth.uid()
+    OR public.is_super_admin(auth.uid())
+  );
+
+CREATE POLICY "projects_insert" ON public.projects
+  FOR INSERT WITH CHECK (auth.uid() = created_by);
+
+CREATE POLICY "projects_update_admin" ON public.projects
+  FOR UPDATE USING (
+    public.is_project_admin(projects.id, auth.uid())
+  );
+
+CREATE POLICY "projects_delete_admin" ON public.projects
+  FOR DELETE USING (
+    public.is_project_admin(projects.id, auth.uid())
+  );
+
+-- --- project_members ---
+CREATE POLICY "pm_select_member" ON public.project_members
+  FOR SELECT USING (
+    public.is_project_member(project_members.project_id, auth.uid())
+  );
+
+CREATE POLICY "pm_insert_admin" ON public.project_members
+  FOR INSERT WITH CHECK (
+    public.is_project_admin(project_members.project_id, auth.uid())
+    OR public.is_project_creator(project_members.project_id, auth.uid())
+  );
+
+CREATE POLICY "pm_update_admin" ON public.project_members
+  FOR UPDATE USING (
+    public.is_project_admin(project_members.project_id, auth.uid())
+  );
+
+CREATE POLICY "pm_delete_admin" ON public.project_members
+  FOR DELETE USING (
+    public.is_project_admin(project_members.project_id, auth.uid())
+  );
+
+-- --- locales ---
+CREATE POLICY "locales_select_member" ON public.locales
+  FOR SELECT USING (
+    public.is_project_member(locales.project_id, auth.uid())
+  );
+
+CREATE POLICY "locales_insert_admin" ON public.locales
+  FOR INSERT WITH CHECK (
+    public.is_project_admin(locales.project_id, auth.uid())
+  );
+
+CREATE POLICY "locales_update_admin" ON public.locales
+  FOR UPDATE USING (
+    public.is_project_admin(locales.project_id, auth.uid())
+  );
+
+CREATE POLICY "locales_delete_admin" ON public.locales
+  FOR DELETE USING (
+    public.is_project_admin(locales.project_id, auth.uid())
+  );
+
+-- --- translation_keys ---
+CREATE POLICY "tk_select_member" ON public.translation_keys
+  FOR SELECT USING (
+    public.is_project_member(translation_keys.project_id, auth.uid())
+  );
+
+CREATE POLICY "tk_insert_editor" ON public.translation_keys
+  FOR INSERT WITH CHECK (
+    public.is_project_editor(translation_keys.project_id, auth.uid())
+  );
+
+CREATE POLICY "tk_update_editor" ON public.translation_keys
+  FOR UPDATE USING (
+    public.is_project_editor(translation_keys.project_id, auth.uid())
+  );
+
+CREATE POLICY "tk_delete_admin" ON public.translation_keys
+  FOR DELETE USING (
+    public.is_project_admin(translation_keys.project_id, auth.uid())
+  );
+
+-- --- translations ---
+CREATE POLICY "translations_select_member" ON public.translations
+  FOR SELECT USING (
+    public.is_project_member(
+      (SELECT project_id FROM public.translation_keys WHERE id = translations.key_id),
+      auth.uid()
+    )
+  );
+
+CREATE POLICY "translations_insert_editor" ON public.translations
+  FOR INSERT WITH CHECK (
+    public.is_project_translator(
+      (SELECT project_id FROM public.translation_keys WHERE id = translations.key_id),
+      auth.uid()
+    )
+  );
+
+CREATE POLICY "translations_update_editor" ON public.translations
+  FOR UPDATE USING (
+    public.is_project_translator(
+      (SELECT project_id FROM public.translation_keys WHERE id = translations.key_id),
+      auth.uid()
+    )
+  );
+
+-- --- system_configs（仅超级管理员可读写） ---
+CREATE POLICY "system_configs_all" ON public.system_configs
+  FOR ALL
+  USING (public.is_super_admin(auth.uid()))
+  WITH CHECK (public.is_super_admin(auth.uid()));
+
+-- ============================================
+-- 14. 自动更新 updated_at 触发器
+-- ============================================
+CREATE OR REPLACE FUNCTION public.update_updated_at()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS profiles_updated_at ON public.profiles;
+CREATE TRIGGER profiles_updated_at BEFORE UPDATE ON public.profiles
+  FOR EACH ROW EXECUTE FUNCTION public.update_updated_at();
+
+-- 防止用户修改自己的 role_id（super_admin 除外）
+CREATE OR REPLACE FUNCTION public.prevent_self_role_change()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.role_id IS DISTINCT FROM OLD.role_id AND NEW.id = auth.uid() THEN
+    IF NOT public.is_super_admin(auth.uid()) THEN
+      NEW.role_id = OLD.role_id;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS profiles_role_guard ON public.profiles;
+CREATE TRIGGER profiles_role_guard BEFORE UPDATE ON public.profiles
+  FOR EACH ROW EXECUTE FUNCTION public.prevent_self_role_change();
+
+-- 防止非超级管理员修改超级管理员的角色
+CREATE OR REPLACE FUNCTION public.prevent_super_admin_role_change()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  IF NEW.role_id IS NOT DISTINCT FROM OLD.role_id THEN
+    RETURN NEW;
+  END IF;
+
+  IF NOT public.is_super_admin(auth.uid()) THEN
+    IF OLD.role_id IN (SELECT id FROM public.roles WHERE name = 'super_admin') THEN
+      RAISE EXCEPTION '仅超级管理员可修改超级管理员的角色';
+    END IF;
+    IF NEW.role_id IN (SELECT id FROM public.roles WHERE name = 'super_admin') THEN
+      RAISE EXCEPTION '仅超级管理员可将用户设为超级管理员';
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS profiles_super_admin_guard ON public.profiles;
+CREATE TRIGGER profiles_super_admin_guard BEFORE UPDATE ON public.profiles
+  FOR EACH ROW EXECUTE FUNCTION public.prevent_super_admin_role_change();
+
+DROP TRIGGER IF EXISTS roles_updated_at ON public.roles;
+CREATE TRIGGER roles_updated_at BEFORE UPDATE ON public.roles
+  FOR EACH ROW EXECUTE FUNCTION public.update_updated_at();
+
+DROP TRIGGER IF EXISTS projects_updated_at ON public.projects;
+CREATE TRIGGER projects_updated_at BEFORE UPDATE ON public.projects
+  FOR EACH ROW EXECUTE FUNCTION public.update_updated_at();
+
+DROP TRIGGER IF EXISTS tk_updated_at ON public.translation_keys;
+CREATE TRIGGER tk_updated_at BEFORE UPDATE ON public.translation_keys
+  FOR EACH ROW EXECUTE FUNCTION public.update_updated_at();
+
+DROP TRIGGER IF EXISTS translations_updated_at ON public.translations;
+CREATE TRIGGER translations_updated_at BEFORE UPDATE ON public.translations
+  FOR EACH ROW EXECUTE FUNCTION public.update_updated_at();
+
+-- ============================================
+-- 14.5 翻译修改历史
+-- ============================================
+CREATE TABLE public.translation_history (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES public.projects(id) ON DELETE CASCADE,
+  translation_id UUID NOT NULL,
+  key_name TEXT,
+  locale_code TEXT,
+  locale_name TEXT,
+  old_value TEXT DEFAULT '',
+  new_value TEXT DEFAULT '',
+  updated_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  updater_email TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.translation_history ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "translation_history_select" ON public.translation_history
+  FOR SELECT USING (
+    public.is_project_member(project_id, auth.uid())
+    OR public.is_super_admin(auth.uid())
+  );
+
+CREATE OR REPLACE FUNCTION public.log_translation_change()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_project_id UUID;
+  v_key_name TEXT;
+  v_locale_code TEXT;
+  v_locale_name TEXT;
+  v_updater_email TEXT;
+BEGIN
+  SELECT project_id INTO v_project_id FROM public.translation_keys WHERE id = NEW.key_id;
+  SELECT "key" INTO v_key_name FROM public.translation_keys WHERE id = NEW.key_id;
+  SELECT code, name INTO v_locale_code, v_locale_name FROM public.locales WHERE id = NEW.locale_id;
+  SELECT email INTO v_updater_email FROM public.profiles WHERE id = NEW.updated_by;
+
+  IF TG_OP = 'UPDATE' THEN
+    IF OLD.value IS DISTINCT FROM NEW.value THEN
+      INSERT INTO public.translation_history (project_id, translation_id, key_name, locale_code, locale_name, old_value, new_value, updated_by, updater_email)
+      VALUES (v_project_id, NEW.id, v_key_name, v_locale_code, v_locale_name, OLD.value, NEW.value, NEW.updated_by, v_updater_email);
+    END IF;
+  ELSIF TG_OP = 'INSERT' THEN
+    IF NEW.value IS NOT NULL AND NEW.value != '' THEN
+      INSERT INTO public.translation_history (project_id, translation_id, key_name, locale_code, locale_name, old_value, new_value, updated_by, updater_email)
+      VALUES (v_project_id, NEW.id, v_key_name, v_locale_code, v_locale_name, '', NEW.value, NEW.updated_by, v_updater_email);
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS translations_history_trigger ON public.translations;
+CREATE TRIGGER translations_history_trigger
+  AFTER INSERT OR UPDATE ON public.translations
+  FOR EACH ROW EXECUTE FUNCTION public.log_translation_change();
+
+CREATE INDEX IF NOT EXISTS idx_translation_history_project ON public.translation_history (project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_translation_history_translation ON public.translation_history (translation_id, created_at DESC);
+
+-- ============================================
+-- 15. 管理员创建用户 RPC
+--     超级管理员可直接创建用户（无需邮箱验证）
+-- ============================================
+CREATE OR REPLACE FUNCTION public.create_user(
+  p_email TEXT,
+  p_password TEXT,
+  p_display_name TEXT DEFAULT NULL,
+  p_role_name TEXT DEFAULT 'user'
+)
+RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_user_id UUID;
+  v_role_id UUID;
+  v_instance_id UUID;
+BEGIN
+  -- 验证调用者权限：必须是超级管理员
+  IF NOT public.is_super_admin(auth.uid()) THEN
+    RETURN jsonb_build_object('error', '权限不足，仅超级管理员可创建用户');
+  END IF;
+
+  -- 检查邮箱是否已存在
+  IF EXISTS (SELECT 1 FROM auth.users WHERE email = p_email) THEN
+    RETURN jsonb_build_object('error', '该邮箱已被注册');
+  END IF;
+
+  -- 获取角色 ID
+  SELECT id INTO v_role_id FROM public.roles WHERE name = p_role_name LIMIT 1;
+  IF v_role_id IS NULL THEN
+    v_role_id := (SELECT id FROM public.roles WHERE name = 'user' LIMIT 1);
+  END IF;
+
+  -- 获取 Supabase instance_id（脚本开头已初始化，必定存在）
+  SELECT id INTO v_instance_id FROM auth.instances LIMIT 1;
+
+  -- 插入 auth.users
+  INSERT INTO auth.users (
+    instance_id, id, aud, role, email, encrypted_password,
+    email_confirmed_at, raw_user_meta_data, created_at, updated_at,
+    confirmation_token, recovery_token, email_change_token_new, email_change, invited_at
+  ) VALUES (
+    v_instance_id,
+    gen_random_uuid(), 'authenticated', 'authenticated',
+    p_email,
+    crypt(p_password, gen_salt('bf')),
+    now(),
+    COALESCE(jsonb_build_object('display_name', p_display_name), '{}'::jsonb),
+    now(), now(), '', '', '', '', null
+  )
+  RETURNING id INTO v_user_id;
+
+  -- 手动创建 profile（指定角色），ON CONFLICT 防止与触发器冲突
+  INSERT INTO public.profiles (id, display_name, email, role_id)
+  VALUES (
+    v_user_id,
+    COALESCE(p_display_name, split_part(p_email, '@', 1)),
+    p_email,
+    v_role_id
+  )
+  ON CONFLICT (id) DO NOTHING;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'user_id', v_user_id,
+    'email', p_email,
+    'display_name', COALESCE(p_display_name, split_part(p_email, '@', 1))
+  );
+END;
+$$;
+
+-- ============================================
+-- 16. 管理员重置用户密码 RPC
+-- ============================================
+CREATE OR REPLACE FUNCTION public.reset_user_password(
+  target_user_id UUID,
+  new_password TEXT
+)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  IF NOT public.is_super_admin(auth.uid()) THEN
+    RAISE EXCEPTION '权限不足，仅超级管理员可重置密码';
+  END IF;
+
+  UPDATE auth.users
+  SET encrypted_password = crypt(new_password, gen_salt('bf'))
+  WHERE id = target_user_id;
+END;
+$$;
+
+-- ============================================
+-- 17. 审计日志
+-- ============================================
+CREATE TABLE public.audit_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  actor_id UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  actor_email TEXT,
+  action TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_id TEXT,
+  detail JSONB DEFAULT '{}'::jsonb,
+  ip_address TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "audit_logs_select" ON public.audit_logs
+  FOR SELECT USING (
+    public.has_system_permission(auth.uid(), 'manage_users')
+    OR public.is_super_admin(auth.uid())
+  );
+
+-- 记录日志的 RPC 函数
+CREATE OR REPLACE FUNCTION public.log_action(
+  p_action TEXT,
+  p_target_type TEXT,
+  p_target_id TEXT DEFAULT NULL,
+  p_detail JSONB DEFAULT '{}'::jsonb
+)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_email TEXT;
+BEGIN
+  SELECT email INTO v_email FROM public.profiles WHERE id = auth.uid();
+  INSERT INTO public.audit_logs (actor_id, actor_email, action, target_type, target_id, detail)
+  VALUES (auth.uid(), v_email, p_action, p_target_type, p_target_id, p_detail);
+END;
+$$;
+
+-- 索引加速查询
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON public.audit_logs (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON public.audit_logs (action);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_target ON public.audit_logs (target_type, target_id);
+
+-- ============================================
+-- 完成！
+-- ============================================

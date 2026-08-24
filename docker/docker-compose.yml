@@ -1,0 +1,216 @@
+# LangManager 自托管部署
+# 单条命令拉起：自托管 Supabase 全套 + 前端 Nginx
+#
+# 启动：
+#   1. cp docker/.env.example docker/.env  并填写变量
+#   2. node docker/init/generate-keys.mjs   # 生成 anon/service_role key
+#   3. docker compose -f docker/docker-compose.yml up -d
+#
+# 说明：
+#   - db(Postgres 17) / auth(GoTrue) / rest(PostgREST) / realtime 组成最小可用 Supabase
+#   - kong 作为反向代理，把 /rest /auth /realtime /translate 转发到各服务（与版本无关）
+#   - web 是前端 React（Nginx 托管 + 同源反代），仅 web 对外暴露
+#   镜像版本组合对齐官方 supabase master（postgres 17.6.1.136 / auth v2.189.0 / rest v14.12 / realtime v2.102.3），
+#   避免 auth migration 因 postgres 过旧而失败（auth.factor_type 缺失）。
+
+services:
+  # ---------- 数据库 ----------
+  db:
+    image: supabase/postgres:17.6.1.136
+    restart: unless-stopped
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: /var/run/postgresql
+      POSTGRES_DB: postgres
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXP: 3600
+    healthcheck:
+      test: pg_isready -U postgres -h localhost
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---------- Auth (GoTrue) ----------
+  auth:
+    image: supabase/gotrue:v2.189.0
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: 9999
+      API_EXTERNAL_URL: ${PUBLIC_DOMAIN}
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_admin:${POSTGRES_PASSWORD}@db:5432/postgres
+      GOTRUE_SITE_URL: ${PUBLIC_DOMAIN}
+      GOTRUE_URI_ALLOW_LIST: ${PUBLIC_DOMAIN}
+      GOTRUE_DISABLE_SIGNUP: 'false'
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_EXP: 3600
+      GOTRUE_JWT_SECRET: ${JWT_SECRET}
+      GOTRUE_JWT_ISSUER: ${PUBLIC_DOMAIN}
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: 'true'
+      GOTRUE_MAILER_AUTOCONFIRM: 'true'      # 自托管无邮件验证时，注册即激活
+      GOTRUE_SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL}
+      GOTRUE_SMTP_HOST: ${SMTP_HOST}
+      GOTRUE_SMTP_PORT: ${SMTP_PORT}
+      GOTRUE_SMTP_USER: ${SMTP_USER}
+      GOTRUE_SMTP_PASS: ${SMTP_PASS}
+      GOTRUE_SMTP_SENDER_NAME: LangManager
+    healthcheck:
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:9999/health']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---------- REST API (PostgREST) ----------
+  rest:
+    image: postgrest/postgrest:v14.12
+    restart: unless-stopped
+    depends_on:
+      auth:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://supabase_admin:${POSTGRES_PASSWORD}@db:5432/postgres
+      PGRST_DB_SCHEMAS: public,graphql_public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_DB_MAX_ROWS: 1000
+      PGRST_DB_EXTRA_SEARCH_PATH: public
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_DB_USE_LEGACY_GUCS: 'false'
+      PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET}
+      PGRST_APP_SETTINGS_JWT_EXP: 3600
+
+  # ---------- API Gateway (Kong) ----------
+  kong:
+    image: kong:2.8.1
+    restart: unless-stopped
+    depends_on:
+      rest:
+        condition: service_started
+      auth:
+        condition: service_healthy
+    ports:
+      - '8000:8000/tcp'   # 对内/对外：前端 + REST + Auth 统一入口
+      - '8443:8443/tcp'
+    environment:
+      KONG_DATABASE: 'off'
+      KONG_DECLARATIVE_CONFIG: /var/lib/kong/kong.yml
+      KONG_DNS_ORDER: 'LAST,A,CNAME'
+      KONG_PLUGINS: 'request-transformer,cors,key-auth,acl'
+      KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
+      KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
+    volumes:
+      - ./kong/kong.yml:/var/lib/kong/kong.yml:ro
+
+  # ---------- Realtime (监听 postgres_changes) ----------
+  # 暂时禁用：需正确的 _realtime schema 初始化（前端有轮询兜底，禁用用户最多延迟 5 分钟被踢）。
+  # 启用时取消注释，并确保 db 初始化创建 _realtime schema。
+  # realtime:
+  #   image: supabase/realtime:v2.102.3
+  #   restart: unless-stopped
+  #   depends_on:
+  #     db:
+  #       condition: service_healthy
+  #   environment:
+  #     PORT: 4000
+  #     DB_HOST: db
+  #     DB_PORT: 5432
+  #     DB_USER: supabase_admin
+  #     DB_PASSWORD: ${POSTGRES_PASSWORD}
+  #     DB_NAME: postgres
+  #     DB_AFTER_CONNECT_QUERY: 'SET search_path TO _realtime'
+  #     DB_ENC_KEY: ${ENCRYPTION_KEY}
+  #     API_JWT_SECRET: ${JWT_SECRET}
+  #     SECRET_KEY_BASE: ${ENCRYPTION_KEY}
+  #     METRICS_JWT_SECRET: ${JWT_SECRET}
+  #     ERL_AFLAGS: -proto_dist inet_tcp
+  #     DNS_NODES: "''"
+  #     RLIMIT_NOFILE: '10000'
+  #     APP_NAME: realtime
+
+  # ---------- 翻译服务（自托管版 translate function，腾讯云 TMT） ----------
+  translate:
+    build:
+      context: ./translate
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: 8081
+      JWT_SECRET: ${JWT_SECRET}
+      # 翻译密钥优先从 system_configs 表读取（前端“系统设置”页面配置）；
+      # 以下环境变量仅为兜底，通常留空即可。
+      TENCENT_SECRET_ID: ${TENCENT_SECRET_ID}
+      TENCENT_SECRET_KEY: ${TENCENT_SECRET_KEY}
+      TENCENT_REGION: ${TENCENT_REGION:-ap-guangzhou}
+      # 用于从数据库读取腾讯云密钥配置
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+      SUPABASE_URL: http://kong:8000
+    healthcheck:
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:8081/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------- 数据库初始化（执行 init.sql） ----------
+  init-db:
+    image: supabase/postgres:17.6.1.136
+    restart: 'no'
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./init/01-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    # 用 supabase_admin（superuser，密码=POSTGRES_PASSWORD）执行初始化脚本。
+    # 注意：auth 服务也使用 supabase_admin 连接（supabase_auth_admin 是保留角色无法改密码）。
+    entrypoint:
+      - 'sh'
+      - '-c'
+      - 'psql -h db -U supabase_admin -d postgres -f /docker-entrypoint-initdb.d/01-init.sql'
+    # 用 restart:no 跑一次即退出；如需重跑可：docker compose run --rm init-db
+
+  # ---------- 自动创建超级管理员（通过 GoTrue Admin API） ----------
+  init-admin:
+    image: node:20-alpine
+    restart: 'no'
+    depends_on:
+      db:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+      kong:
+        condition: service_healthy
+    volumes:
+      - ./init/create-admin.mjs:/init/create-admin.mjs:ro
+      - ./.env:/init/.env:ro
+    working_dir: /init
+    entrypoint:
+      - 'sh'
+      - '-c'
+      - 'node create-admin.mjs'
+    # 用 restart:no 跑一次即退出；如需重跑可：docker compose run --rm init-admin
+
+  # ---------- 前端（React 构建产物 + Nginx 反向代理） ----------
+  web:
+    build:
+      context: ..
+      dockerfile: docker/web/Dockerfile
+      args:
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
+        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY}
+        VITE_TRANSLATE_URL: ${VITE_TRANSLATE_URL}
+    restart: unless-stopped
+    depends_on:
+      - kong
+    ports:
+      - '127.0.0.1:8080:80'   # 仅本机暴露，由 host 的 Nginx/Caddy/反代对外（见 README）
+
+volumes:
+  db-data:

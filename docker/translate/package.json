@@ -1,0 +1,9 @@
+{
+  "name": "langmanager-translate",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.mjs",
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

@@ -1,0 +1,41 @@
+# Kong 声明式路由配置（自托管 Supabase 最小可用）
+# Kong 2.8.1 要求 services/routes/plugins 均为数组（- 列表项）。
+
+_format_version: '2.1'
+
+services:
+  - name: rest
+    host: rest
+    port: 3000
+    protocol: http
+    routes:
+      - name: rest-route
+        strip_path: true
+        paths:
+          - /rest/v1/
+    plugins:
+      - name: cors
+
+  - name: auth
+    host: auth
+    port: 9999
+    protocol: http
+    routes:
+      - name: auth-route
+        strip_path: true
+        paths:
+          - /auth/v1/
+    plugins:
+      - name: cors
+
+  - name: translate
+    host: translate
+    port: 8081
+    protocol: http
+    routes:
+      - name: translate-route
+        strip_path: true
+        paths:
+          - /translate/v1/
+    plugins:
+      - name: cors

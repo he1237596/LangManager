@@ -10,10 +10,27 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+// 最小执行间隔：500 秒内重复请求直接跳过，避免外部监控频率过高吃额度
+const MIN_INTERVAL_MS = 500_000
+let lastRunTs = 0
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
+
+  const now = Date.now()
+  if (now - lastRunTs < MIN_INTERVAL_MS) {
+    return new Response(JSON.stringify({
+      status: 'skipped',
+      reason: 'rate limited',
+      timestamp: new Date().toISOString(),
+    }), {
+      status: 200,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    })
+  }
+  lastRunTs = now
 
   try {
     const start = Date.now()

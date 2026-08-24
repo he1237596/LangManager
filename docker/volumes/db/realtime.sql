@@ -1,0 +1,2 @@
+-- 占位：自托管 Postgrest 不需要 realtime 扩展（本项目未使用 Realtime 功能）
+-- 保留空文件以满足 db 容器挂载要求
